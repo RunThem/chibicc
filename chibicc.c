@@ -5,6 +5,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+//
+// Tokenizer
+//
+
 typedef enum {
   TK_PUNCT,  // Punctuators, 标点符号
   TK_NUM,    // Numeric literals, 数字字符
@@ -92,8 +96,8 @@ static int get_number(Token* tok) {
 static Token* new_token(TokenKind kind, char* start, char* end) {
   Token* tok = calloc(1, sizeof(Token));
   tok->kind  = kind;
-  tok->loc   = start;
   tok->len   = end - start;
+  tok->loc   = strndup(start, tok->len);
   return tok;
 }
 
@@ -124,7 +128,7 @@ static Token* tokenize(void) {
 
     // Punctuator
     // 标点符号
-    if (*p == '+' || *p == '-') {
+    if (ispunct(*p)) {
       cur = cur->next = new_token(TK_PUNCT, p, p + 1);
       p++;
       continue;
@@ -141,7 +145,7 @@ static void token_dump(Token* tok) {
   while (tok->kind != TK_EOF) {
     switch (tok->kind) {
       case TK_PUNCT:
-        printf("punct '%s'\n", strndup(tok->loc, tok->len));
+        printf("punct '%s'\n", tok->loc);
         break;
       case TK_NUM:
         printf("num %d\n", tok->val);
@@ -156,6 +160,155 @@ static void token_dump(Token* tok) {
   printf("\n");
 }
 
+//
+// Parser
+//
+
+typedef enum {
+  ND_ADD,  // +
+  ND_SUB,  // -
+  ND_MUL,  // *
+  ND_DIV,  // /
+  ND_NUM,  // Integer
+} NodeKind;
+
+// AST node type
+typedef struct Node Node;
+struct Node {
+  NodeKind kind;  // Node kind
+  Node* lhs;      // Left-hand side, 左侧
+  Node* rhs;      // Right-hand side, 右侧
+  int val;        // Used if kind == ND_NUM
+};
+
+static Node* new_node(NodeKind kind) {
+  Node* node = calloc(1, sizeof(Node));
+  node->kind = kind;
+  return node;
+}
+
+static Node* new_binary(NodeKind kind, Node* lhs, Node* rhs) {
+  Node* node = new_node(kind);
+  node->lhs  = lhs;
+  node->rhs  = rhs;
+  return node;
+}
+
+static Node* new_num(int val) {
+  Node* node = new_node(ND_NUM);
+  node->val  = val;
+  return node;
+}
+
+static Node* expr(Token** rest, Token* tok);
+static Node* mul(Token** rest, Token* tok);
+static Node* primary(Token** rest, Token* tok);
+
+// expr = mul ("+" mul | "-" mul)*
+static Node* expr(Token** rest, Token* tok) {
+  Node* node = mul(&tok, tok);
+
+  for (;;) {
+    if (equal(tok, "+")) {
+      node = new_binary(ND_ADD, node, mul(&tok, tok->next));
+      continue;
+    }
+
+    if (equal(tok, "-")) {
+      node = new_binary(ND_SUB, node, mul(&tok, tok->next));
+      continue;
+    }
+
+    *rest = tok;
+    return node;
+  }
+}
+
+// mul = primary ("*" primary | "/" primary)*
+static Node* mul(Token** rest, Token* tok) {
+  Node* node = primary(&tok, tok);
+
+  for (;;) {
+    if (equal(tok, "*")) {
+      node = new_binary(ND_MUL, node, primary(&tok, tok->next));
+      continue;
+    }
+
+    if (equal(tok, "/")) {
+      node = new_binary(ND_DIV, node, primary(&tok, tok->next));
+      continue;
+    }
+
+    *rest = tok;
+    return node;
+  }
+}
+
+// primary = "(" expr ")" | num
+static Node* primary(Token** rest, Token* tok) {
+  if (equal(tok, "(")) {
+    Node* node = expr(&tok, tok->next);
+    *rest      = skip(tok, ")");
+    return node;
+  }
+
+  if (tok->kind == TK_NUM) {
+    Node* node = new_num(tok->val);
+    *rest      = tok->next;
+    return node;
+  }
+
+  error_tok(tok, "expected an expression");
+}
+
+//
+// Code generator
+//
+
+static int depth;
+
+static void push(void) {
+  printf("  push %%rax\n");
+  depth++;
+}
+
+static void pop(char* arg) {
+  printf("  pop %s\n", arg);
+  depth--;
+}
+
+static void gen_expr(Node* node) {
+  if (node->kind == ND_NUM) {
+    printf("  mov $%d, %%rax\n", node->val);
+    return;
+  }
+
+  gen_expr(node->rhs);
+  push();
+  gen_expr(node->lhs);
+  pop("%rdi");
+
+  switch (node->kind) {
+    case ND_ADD:
+      printf("  add %%rdi, %%rax\n");
+      return;
+    case ND_SUB:
+      printf("  sub %%rdi, %%rax\n");
+      return;
+    case ND_MUL:
+      printf("  imul %%rdi, %%rax\n");
+      return;
+    case ND_DIV:
+      printf("  cqo\n");
+      printf("  idiv %%rdi\n");
+      return;
+    default:
+      return;
+  }
+
+  error("invalid expression");
+}
+
 int main(int argc, char** argv) {
   if (argc != 2) {
     error("%s: invalid number of arguments\n", argv[0]);
@@ -165,27 +318,18 @@ int main(int argc, char** argv) {
   Token* tok    = tokenize();
   // token_dump(tok);
 
+  Node* node = expr(&tok, tok);
+
+  if (tok->kind != TK_EOF) {
+    error_tok(tok, "extra token");
+  }
+
   printf("  .globl main\n");
   printf("main:\n");
 
-  // The first token must be a number
-  // 第一个 Token 必须是数字
-  printf("  mov $%d, %%rax\n", get_number(tok));
-  tok = tok->next;
-
-  // ... followed by either `+ <number>` or `- <number>`
-  // 后面跟着 `+ <number>` 或 `- <number>`
-  while (tok->kind != TK_EOF) {
-    if (equal(tok, "+")) {
-      printf("  add $%d, %%rax\n", get_number(tok->next));
-      tok = tok->next->next;
-      continue;
-    }
-
-    tok = skip(tok, "-");
-    printf("  sub $%d, %%rax\n", get_number(tok));
-    tok = tok->next;
-  }
+  // Traverse the AST to emit assembly
+  // 遍历 AST 输出汇编
+  gen_expr(node);
 
   printf("  ret\n");
 

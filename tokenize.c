@@ -116,6 +116,13 @@ Token* tokenize(char* p) {
       continue;
     }
 
+    // Identifier
+    if ('a' <= *p && *p <= 'z') {
+      cur = cur->next = new_token(TK_IDENT, p, p + 1);
+      p++;
+      continue;
+    }
+
     // Punctuator
     // 标点符号
     int punct_len = read_punct(p);

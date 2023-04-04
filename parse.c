@@ -1,5 +1,7 @@
 #include "chibicc.h"
 
+// stmt = expr-stmt
+// expr-stmt = expr ";"
 // expr = equality
 // equality = relational ("==" relational | "!=" relational)*
 // relational = add ("<" add | "<=" add | ">" add | ">=" add)*
@@ -8,6 +10,7 @@
 // unary = ("+" | "-") unary | primary
 // primary = "(" expr ")" | num
 static Node* expr(Token** rest, Token* tok);
+static Node* expr_stmt(Token** rest, Token* tok);
 static Node* equality(Token** rest, Token* tok);
 static Node* relational(Token** rest, Token* tok);
 static Node* add(Token** rest, Token* tok);
@@ -37,6 +40,18 @@ static Node* new_unary(NodeKind kind, Node* expr) {
 static Node* new_num(int val) {
   Node* node = new_node(ND_NUM);
   node->val  = val;
+  return node;
+}
+
+// stmt = expr-stmt
+static Node* stmt(Token** rest, Token* tok) {
+  return expr_stmt(rest, tok);
+}
+
+// expr-stmt = expr ";"
+static Node* expr_stmt(Token** rest, Token* tok) {
+  Node* node = new_unary(ND_LEXPR_STMT, expr(&tok, tok));
+  *rest      = skip(tok, ";");
   return node;
 }
 
@@ -167,11 +182,13 @@ static Node* primary(Token** rest, Token* tok) {
   return NULL;
 }
 
+// program = stmt*
 Node* parse(Token* tok) {
-  Node* node = expr(&tok, tok);
-  if (tok->kind != TK_EOF) {
-    error_tok(tok, "extra token");
+  Node head = {};
+  Node* cur = &head;
+  while (tok->kind != TK_EOF) {
+    cur = cur->next = stmt(&tok, tok);
   }
 
-  return node;
+  return head.next;
 }

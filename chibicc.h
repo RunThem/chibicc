@@ -40,22 +40,24 @@ void token_dump(Token* tok);
 //
 
 typedef enum {
-  ND_ADD,  // +
-  ND_SUB,  // -
-  ND_MUL,  // *
-  ND_DIV,  // /
-  ND_NEG,  // unary -
-  ND_EQ,   // ==
-  ND_NE,   // !=
-  ND_LT,   // <
-  ND_LE,   // <=
-  ND_NUM,  // Integer
+  ND_ADD,         // +
+  ND_SUB,         // -
+  ND_MUL,         // *
+  ND_DIV,         // /
+  ND_NEG,         // unary -
+  ND_EQ,          // ==
+  ND_NE,          // !=
+  ND_LT,          // <
+  ND_LE,          // <=
+  ND_LEXPR_STMT,  // Expression statement, 表达式语句
+  ND_NUM,         // Integer
 } NodeKind;
 
 // AST node type
 typedef struct Node Node;
 struct Node {
   NodeKind kind;  // Node kind
+  Node* next;     // Next node
   Node* lhs;      // Left-hand side, 左侧
   Node* rhs;      // Right-hand side, 右侧
   int val;        // Used if kind == ND_NUM

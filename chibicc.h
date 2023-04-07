@@ -34,7 +34,7 @@ void error_tok(Token* tok, char* fmt, ...);
 bool equal(Token* tok, char* op);
 Token* skip(Token* tok, char* s);
 Token* tokenize(char* input);
-void token_dump(Token* tok);
+void show_tokens(Token* tok);
 
 //
 // parser.c
@@ -67,7 +67,14 @@ struct Node {
   int val;        // Used if kind == ND_NUM
 };
 
+typedef struct Trunk {
+  struct Trunk* prev;
+  char* str;
+} Trunk;
+
 Node* parse(Token* tok);
+
+void show_trees(Node* root, Trunk* prev, bool is_left);
 
 //
 // codegen.c

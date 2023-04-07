@@ -139,7 +139,7 @@ Token* tokenize(char* p) {
   return head.next;
 }
 
-void token_dump(Token* tok) {
+void show_tokens(Token* tok) {
   while (tok->kind != TK_EOF) {
     switch (tok->kind) {
       case TK_PUNCT:

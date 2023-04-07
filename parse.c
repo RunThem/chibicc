@@ -217,3 +217,50 @@ Node* parse(Token* tok) {
 
   return head.next;
 }
+
+static Trunk* new_trunk(Trunk* p, char* str) {
+  Trunk* t = calloc(1, sizeof(Trunk));
+  t->prev  = p;
+  t->str   = strdup(str);
+
+  return t;
+}
+
+static void show_trunk(Trunk* p) {
+  if (p == NULL)
+    return;
+
+  show_trunk(p->prev);
+  printf("%s", p->str);
+}
+
+void show_trees(Node* root, Trunk* prev, bool is_left) {
+  if (root == NULL)
+    return;
+
+  char* prev_str = "        ";
+  Trunk* t       = new_trunk(prev, prev_str);
+
+  show_trees(root->rhs, t, true);
+
+  if (!prev) {
+    t->str = strdup(">>>");
+  } else if (is_left) {
+    t->str   = strdup("\b┌─");
+    prev_str = "       │";
+  } else {
+    t->str    = strdup("└─");
+    prev->str = strdup(prev_str);
+  }
+
+  show_trunk(t);
+  printf(" {kind %d, name '%c', val %d}\n", root->kind, root->name, root->val);
+
+  if (prev) {
+    prev->str = strdup(prev_str);
+  }
+
+  t->str = strdup("        │");
+
+  show_trees(root->lhs, t, false);
+}

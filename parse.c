@@ -77,11 +77,32 @@ static Obj* new_lvar(char* name) {
   return var;
 }
 
-// stmt = "return" expr ";" | "{" compound-stmt | expr-stmt
+// stmt = "return" expr ";"
+//      | "if" expr "{" stmt "}" ("else" "{" stmt "}")?
+//      | "{" compound-stmt
+//      | expr-stmt
 static Node* stmt(Token** rest, Token* tok) {
   if (equal(tok, "return")) {
     Node* node = new_unary(ND_RETURN, expr(&tok, tok->next));
     *rest      = skip(tok, ";");
+    return node;
+  }
+
+  if (equal(tok, "if")) {
+    Node* node = new_node(ND_IF);
+    node->cond = expr(&tok, tok->next);
+    if (!equal(tok, "{")) {
+      error_tok(tok, "!= '{'\n");
+    }
+    node->then = stmt(&tok, tok);
+    if (equal(tok, "else")) {
+      if (!equal(tok->next, "if") && !equal(tok->next, "{")) {
+        error_tok(tok->next, "!= is 'if' or != '{'\n");
+      }
+      node->els = stmt(&tok, tok->next);
+    }
+
+    *rest = tok;
     return node;
   }
 

@@ -72,7 +72,7 @@ static Token* new_token(TokenKind kind, char* start, char* end) {
   Token* tok = calloc(1, sizeof(Token));
   tok->kind  = kind;
   tok->len   = end - start;
-  tok->loc   = strndup(start, tok->len);
+  tok->loc   = start;
   return tok;
 }
 
@@ -101,14 +101,28 @@ static int read_punct(char* p) {
   return ispunct(*p) ? 1 : 0;
 }
 
+static bool is_keyword(Token* tok) {
+  static char* kw[] = {"return", "if", "else"};
+
+  for (int i = 0; i < sizeof(kw) / sizeof(kw[0]); i++) {
+    if (equal(tok, kw[i])) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 // Tokenize `current_input` and returns new tokens
 // 标记化 `current_input` 并返回新的 Token
 Token* convert_keywords(Token* tok) {
   for (Token* t = tok; t->kind != TK_EOF; t = t->next) {
-    if (equal(t, "return")) {
+    if (is_keyword(tok)) {
       t->kind = TK_KEYWORD;
     }
   }
+
+  return NULL;
 }
 
 // Tokenize a given string and returns new tokens

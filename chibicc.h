@@ -6,6 +6,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+typedef struct Node Node;
+
 //
 // tokenizer.c
 //
@@ -40,6 +42,23 @@ void show_tokens(Token* tok);
 // parser.c
 //
 
+// Local variable
+typedef struct Obj Obj;
+struct Obj {
+  Obj* next;
+  char* name;  // variable name, 变量名
+  int offset;  // Offset from RBP
+};
+
+// Function
+typedef struct Function Function;
+struct Function {
+  Node* body;
+  Obj* locals;
+  int stack_size;
+};
+
+// AST node
 typedef enum {
   ND_ADD,         // +
   ND_SUB,         // -
@@ -57,13 +76,12 @@ typedef enum {
 } NodeKind;
 
 // AST node type
-typedef struct Node Node;
 struct Node {
   NodeKind kind;  // Node kind
   Node* next;     // Next node
   Node* lhs;      // Left-hand side, 左侧
   Node* rhs;      // Right-hand side, 右侧
-  char name;      // Used if kind == ND_VAR
+  Obj* var;       // Used if kind == ND_VAR
   int val;        // Used if kind == ND_NUM
 };
 
@@ -72,7 +90,7 @@ typedef struct Trunk {
   char* str;
 } Trunk;
 
-Node* parse(Token* tok);
+Function* parse(Token* tok);
 
 void show_trees(Node* root, Trunk* prev, bool is_left);
 
@@ -80,4 +98,4 @@ void show_trees(Node* root, Trunk* prev, bool is_left);
 // codegen.c
 //
 
-void codegen(Node* node);
+void codegen(Function* prog);

@@ -8,12 +8,12 @@ int main(int argc, char** argv) {
   Token* tok = tokenize(argv[1]);
   show_tokens(tok);
 
-  Node* node = parse(tok);
-  for (Node* it = node; it != NULL; it = it->next) {
+  Function* prog = parse(tok);
+  for (Node* it = prog->body; it != NULL; it = it->next) {
     show_trees(it, NULL, false);
   }
 
-  codegen(node);
+  codegen(prog);
 
   return 0;
 }

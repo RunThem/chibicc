@@ -72,6 +72,7 @@ typedef enum {
   ND_LE,         // <=
   ND_ASSIGN,     // =
   ND_RETURN,     // "return"
+  ND_BLOCK,      // { ... }
   ND_EXPR_STMT,  // Expression statement, 表达式语句
   ND_VAR,        // Variable
   ND_NUM,        // Integer
@@ -83,8 +84,12 @@ struct Node {
   Node* next;     // Next node
   Node* lhs;      // Left-hand side, 左侧
   Node* rhs;      // Right-hand side, 右侧
-  Obj* var;       // Used if kind == ND_VAR
-  int val;        // Used if kind == ND_NUM
+
+  // Block
+  Node* body;
+
+  Obj* var;  // Used if kind == ND_VAR
+  int val;   // Used if kind == ND_NUM
 };
 
 typedef struct Trunk {

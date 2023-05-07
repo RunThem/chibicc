@@ -75,14 +75,20 @@ static Obj* new_lvar(char* name) {
   return var;
 }
 
-// stmt = expr-stmt
+// stmt = "return" expr ";" | expr-stmt
 static Node* stmt(Token** rest, Token* tok) {
+  if (equal(tok, "return")) {
+    Node* node = new_unary(ND_RETURN, expr(&tok, tok->next));
+    *rest      = skip(tok, ";");
+    return node;
+  }
+
   return expr_stmt(rest, tok);
 }
 
 // expr-stmt = expr ";"
 static Node* expr_stmt(Token** rest, Token* tok) {
-  Node* node = new_unary(ND_LEXPR_STMT, expr(&tok, tok));
+  Node* node = new_unary(ND_EXPR_STMT, expr(&tok, tok));
   *rest      = skip(tok, ";");
   return node;
 }

@@ -13,10 +13,11 @@ typedef struct Node Node;
 //
 
 typedef enum {
-  TK_IDENT,  // Identifiers, 标识符
-  TK_PUNCT,  // Keywords or punctuators, 关键字或标点符号
-  TK_NUM,    // Numeric literals, 数字字符
-  TK_EOF,    // End-of-file markers, 文件结束标记
+  TK_IDENT,    // Identifiers, 标识符
+  TK_PUNCT,    // Keywords or punctuators, 关键字或标点符号
+  TK_KEYWORD,  // keywords
+  TK_NUM,      // Numeric literals, 数字字符
+  TK_EOF,      // End-of-file markers, 文件结束标记
 } TokenKind;
 
 // Token type
@@ -60,19 +61,20 @@ struct Function {
 
 // AST node
 typedef enum {
-  ND_ADD,         // +
-  ND_SUB,         // -
-  ND_MUL,         // *
-  ND_DIV,         // /
-  ND_NEG,         // unary -
-  ND_EQ,          // ==
-  ND_NE,          // !=
-  ND_LT,          // <
-  ND_LE,          // <=
-  ND_ASSIGN,      // =
-  ND_LEXPR_STMT,  // Expression statement, 表达式语句
-  ND_VAR,         // Variable
-  ND_NUM,         // Integer
+  ND_ADD,        // +
+  ND_SUB,        // -
+  ND_MUL,        // *
+  ND_DIV,        // /
+  ND_NEG,        // unary -
+  ND_EQ,         // ==
+  ND_NE,         // !=
+  ND_LT,         // <
+  ND_LE,         // <=
+  ND_ASSIGN,     // =
+  ND_RETURN,     // "return"
+  ND_EXPR_STMT,  // Expression statement, 表达式语句
+  ND_VAR,        // Variable
+  ND_NUM,        // Integer
 } NodeKind;
 
 // AST node type

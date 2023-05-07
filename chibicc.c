@@ -6,11 +6,11 @@ int main(int argc, char** argv) {
   }
 
   Token* tok = tokenize(argv[1]);
-  show_tokens(tok);
+  // show_tokens(tok);
 
   Function* prog = parse(tok);
   for (Node* it = prog->body; it != NULL; it = it->next) {
-    show_trees(it, NULL, false);
+    // show_trees(it, NULL, false);
   }
 
   codegen(prog);

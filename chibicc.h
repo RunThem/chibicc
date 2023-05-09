@@ -6,6 +6,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+typedef struct Type Type;
 typedef struct Node Node;
 
 //
@@ -86,6 +87,7 @@ typedef enum {
 struct Node {
   NodeKind kind;  // Node kind
   Node* next;     // Next node
+  Type* ty;       // Type, e.g. int or pointer to int
   Token* tok;     // Representative token, 代表当前节点的 Token
 
   Node* lhs;  // Left-hand side, 左侧
@@ -113,6 +115,25 @@ typedef struct Trunk {
 Function* parse(Token* tok);
 
 void show_trees(Node* root, Trunk* prev, bool is_left);
+
+//
+// type.c
+//
+
+typedef enum {
+  TY_INT,
+  TY_PTR,
+} TypeKind;
+
+struct Type {
+  TypeKind kind;
+  Type* base;
+};
+
+extern Type* ty_int;
+
+bool is_integer(Type* ty);
+void add_type(Node* node);
 
 //
 // codegen.c

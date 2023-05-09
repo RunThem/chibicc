@@ -84,6 +84,7 @@ typedef enum {
 struct Node {
   NodeKind kind;  // Node kind
   Node* next;     // Next node
+  Token* tok;     // Representative token, 代表当前节点的 Token
 
   Node* lhs;  // Left-hand side, 左侧
   Node* rhs;  // Right-hand side, 右侧

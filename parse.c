@@ -1,20 +1,14 @@
 #include "chibicc.h"
 
+#include <endian.h>
+#include <stdint.h>
+#include <stdio.h>
+
 // All local variable instances created during parsing are
 // accumulated to this list
 
 Obj* locals;
 
-// stmt = "return" expr ";" | "{" compound-stmt | expr-stmt
-// compound-stmt = stmt* "}"
-// expr-stmt = expr ";"
-// expr = equality
-// equality = relational ("==" relational | "!=" relational)*
-// relational = add ("<" add | "<=" add | ">" add | ">=" add)*
-// add = mul ("+" mul | "-" mul)*
-// mul = unary ("*" unary | "/" unary)*
-// unary = ("+" | "-") unary | primary
-// primary = "(" expr ")" | num
 static Node* compound_stmt(Token** rest, Token* tok);
 static Node* expr(Token** rest, Token* tok);
 static Node* expr_stmt(Token** rest, Token* tok);
@@ -79,6 +73,7 @@ static Obj* new_lvar(char* name) {
 
 // stmt = "return" expr ";"
 //      | "if" expr "{" stmt "}" ("else" "{" stmt "}")?
+//      | "for" expr-stmt expr? ";" expr? "{" stmt "}"
 //      | "{" compound-stmt
 //      | expr-stmt
 static Node* stmt(Token** rest, Token* tok) {
@@ -97,12 +92,46 @@ static Node* stmt(Token** rest, Token* tok) {
     node->then = stmt(&tok, tok);
     if (equal(tok, "else")) {
       if (!equal(tok->next, "if") && !equal(tok->next, "{")) {
-        error_tok(tok->next, "!= is 'if' or != '{'\n");
+        error_tok(tok->next, "!= 'if' or != '{'\n");
       }
       node->els = stmt(&tok, tok->next);
     }
 
     *rest = tok;
+    return node;
+  }
+
+  if (equal(tok, "for")) {
+    Node* node    = new_node(ND_FOR);
+    bool is_while = true;
+
+    for (Token* it = tok->next; it != NULL && !equal(it, "{"); it = it->next) {
+      if (equal(it, ";")) {
+        is_while = false;
+        break;
+      }
+    }
+
+    is_while = false;
+    if (is_while) {
+      node->cond = expr(&tok, tok->next);
+      if (!equal(tok, "{")) {
+        error_tok(tok, "!= '{'");
+      }
+    } else {
+      node->init = expr_stmt(&tok, tok->next);
+      if (!equal(tok, ";")) {
+        node->cond = expr(&tok, tok);
+      }
+
+      tok = skip(tok, ";");
+      if (!equal(tok, "{")) {
+        node->inc = expr(&tok, tok);
+      }
+    }
+
+    node->then = stmt(rest, tok);
+
     return node;
   }
 

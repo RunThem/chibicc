@@ -112,7 +112,6 @@ static Node* stmt(Token** rest, Token* tok) {
       }
     }
 
-    is_while = false;
     if (is_while) {
       node->cond = expr(&tok, tok->next);
       if (!equal(tok, "{")) {

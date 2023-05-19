@@ -29,6 +29,7 @@ struct Token {
   int val;         // If kind is TK_NUM, 如果类型为 TK_NUM, 其值
   char* loc;       // Token, location, Token 位置
   int len;         // Token length, Token 长度
+  char* commit     // commit
 };
 
 void error(char* fmt, ...);

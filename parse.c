@@ -185,9 +185,38 @@ static Node* expr_stmt(Token** rest, Token* tok) {
     return new_node(ND_BLOCK, tok);
   }
 
-  Node* node = new_node(ND_EXPR_STMT, tok);
-  node->lhs  = expr(&tok, tok);
-  *rest      = skip(tok, ";");
+  Node* node = NULL;
+  if (equal(tok, "let")) {
+    tok = skip(tok, "let");
+
+    Obj* var = find_var(tok);
+    if (var) {
+      error_tok(tok, "variables are repeatedly defined.");
+    }
+
+    node       = new_var_node(var, tok);
+    node->kind = ND_EXPR_STMT;
+  } else {
+    Token* t = NULL;
+    for (t = tok; !equal(t, "="); t = t->next) {
+      if (t->kind == TK_IDENT) {
+        break;
+      }
+    }
+
+    if (!t) {
+      error_tok(t, "???.");
+    }
+
+    Obj* var = find_var(t);
+    if (!var) {
+      error_tok(t, "variable is not defined.");
+    }
+    node = new_node(ND_EXPR_STMT, tok);
+  }
+
+  node->lhs = expr(&tok, tok);
+  *rest     = skip(tok, ";");
   return node;
 }
 
@@ -462,10 +491,11 @@ void show_trees(Node* root, Trunk* prev, bool is_left) {
   }
 
   show_trunk(t);
-  printf(" {kind %d, name '%s', val %d}\n",
-         root->kind,
-         (root->var != NULL) ? root->var->name : "",
-         root->val);
+  fprintf(stderr,
+          " {kind %d, name '%s', val %d}\n",
+          root->kind,
+          (root->var != NULL) ? root->var->name : "",
+          root->val);
 
   if (prev) {
     prev->str = strdup(prev_str);

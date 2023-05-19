@@ -73,6 +73,9 @@ static Token* new_token(TokenKind kind, char* start, char* end) {
   tok->kind  = kind;
   tok->len   = end - start;
   tok->loc   = start;
+  if (tok->len > 0) {
+    tok->commit = strndup(start, tok->len);
+  }
   return tok;
 }
 
@@ -102,7 +105,7 @@ static int read_punct(char* p) {
 }
 
 static bool is_keyword(Token* tok) {
-  static char* kw[] = {"return", "if", "else", "for"};
+  static char* kw[] = {"return", "if", "else", "for", "let"};
 
   for (int i = 0; i < sizeof(kw) / sizeof(kw[0]); i++) {
     if (equal(tok, kw[i])) {
@@ -117,7 +120,7 @@ static bool is_keyword(Token* tok) {
 // 标记化 `current_input` 并返回新的 Token
 Token* convert_keywords(Token* tok) {
   for (Token* t = tok; t->kind != TK_EOF; t = t->next) {
-    if (is_keyword(tok)) {
+    if (is_keyword(t)) {
       t->kind = TK_KEYWORD;
     }
   }
@@ -181,10 +184,16 @@ void show_tokens(Token* tok) {
   while (tok->kind != TK_EOF) {
     switch (tok->kind) {
       case TK_PUNCT:
-        printf("punct '%s'\n", tok->loc);
+        fprintf(stderr, "punct '%s'\n", tok->commit);
         break;
       case TK_NUM:
-        printf("num %d\n", tok->val);
+        fprintf(stderr, "num %d\n", tok->val);
+        break;
+      case TK_IDENT:
+        fprintf(stderr, "ident '%s'\n", tok->commit);
+        break;
+      case TK_KEYWORD:
+        fprintf(stderr, "keyword '%s'\n", tok->commit);
         break;
       default:
         return;
@@ -193,5 +202,5 @@ void show_tokens(Token* tok) {
     tok = tok->next;
   }
 
-  printf("\n");
+  fprintf(stderr, "\n");
 }

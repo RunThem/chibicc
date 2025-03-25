@@ -6,4 +6,5 @@ edition = "2024"
 [dependencies]
 anyhow = "1.0.97"
 itertools = "0.14.0"
+lexical = "7.0.4"
 maplit = "1.0.2"

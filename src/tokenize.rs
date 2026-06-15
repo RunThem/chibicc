@@ -27,6 +27,12 @@ impl PartialEq<&str> for Token {
   }
 }
 
+impl PartialEq<&str> for &Token {
+  fn eq(&self, other: &&str) -> bool {
+    &self.tok == other
+  }
+}
+
 #[derive(Debug)]
 pub struct Tokenizer {
   pub path: String,
@@ -63,9 +69,15 @@ impl Tokenizer {
   pub fn new(path: &str) -> Self {
     let context = std::fs::read_to_string(path).expect("failed to read file");
 
-    let tokens = clex::Lexer::from(&context[..])
+    let mut tokens = clex::Lexer::from(&context[..])
       .map(|lexeme| Self::transform(lexeme))
       .collect::<Vec<Token>>();
+
+    tokens.push(Token {
+      kind: TokenKind::TkEof,
+      tok: String::default(),
+      span: 0..0,
+    });
 
     Self {
       path: path.into(),

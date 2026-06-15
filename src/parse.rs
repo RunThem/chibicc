@@ -1,5 +1,5 @@
 use crate::{
-  ast::{Node, NodeKind, TokenID},
+  ast::{Node, NodeKind, Program, TokenID},
   tokenize::{
     Token,
     TokenKind::{self, TkNum},
@@ -7,12 +7,6 @@ use crate::{
   },
   utils::Mbox,
 };
-
-pub struct Program {
-  pub tokenizer: Tokenizer,
-  pub pos: TokenID,
-  pub ast: Mbox<Node>,
-}
 
 impl Program {
   pub fn new(tokenizer: Tokenizer) -> Self {
@@ -71,18 +65,18 @@ impl Program {
     node
   }
 
-  // mul = primary ("*" primary | "/" primary)*
+  // mul = unary ("*" unary | "/" unary)*
   fn mul(&mut self) -> Mbox<Node> {
-    let mut node = self.primary();
+    let mut node = self.unary();
 
     loop {
       if self.consume("*") {
-        node = Mbox::new(Node::from_binary(NodeKind::NdMul, node, self.primary()));
+        node = Mbox::new(Node::from_binary(NodeKind::NdMul, node, self.unary()));
         continue;
       }
 
       if self.consume("/") {
-        node = Mbox::new(Node::from_binary(NodeKind::NdDiv, node, self.primary()));
+        node = Mbox::new(Node::from_binary(NodeKind::NdDiv, node, self.unary()));
         continue;
       }
 
@@ -90,6 +84,20 @@ impl Program {
     }
 
     node
+  }
+
+  // unary = ("+" | "-") unary
+  //       | primary
+  fn unary(&mut self) -> Mbox<Node> {
+    if self.consume("+") {
+      return self.unary();
+    }
+
+    if self.consume("-") {
+      return Mbox::new(Node::from_unary(NodeKind::NdNeg, self.unary()));
+    }
+
+    self.primary()
   }
 
   // primary = "(" expr ")" | num

@@ -64,7 +64,16 @@ impl Program {
   }
 
   // stmp = expr-stmt
+  //      | "return" expr ";"
   fn stmt(&mut self) -> Mbox<Node> {
+    if self.consume("return") {
+      let node = Mbox::new(Node::from_unary(NodeKind::NdReturn, self.expr()));
+
+      self.expect(";");
+
+      return node;
+    }
+
     self.expr_stmt()
   }
 

@@ -17,6 +17,7 @@ pub enum NodeKind {
   NdLt,       // <
   NdLe,       // <=
   NdAssign,   // =
+  NdReturn,   // return
   NdExprStmp, // Expression statement
   NdVar,      // Variable
 }
@@ -168,6 +169,12 @@ impl Program {
       NodeKind::NdVar => {
         let token = &tokens[objs[ast.obj].token_id];
         println!("{}NdVar: {}", " ".repeat(retract), token.tok);
+      }
+
+      NodeKind::NdReturn => {
+        println!("{}return:", " ".repeat(retract));
+
+        Self::dump_ast(tokens, objs, &ast.lhs, retract + 2);
       }
 
       _ => unreachable!(),

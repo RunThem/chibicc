@@ -16,7 +16,9 @@ pub enum NodeKind {
   NdNe,       // !=
   NdLt,       // <
   NdLe,       // <=
+  NdAssign,   // =
   NdExprStmp, // Expression statement
+  NdVar,      // Variable
 }
 
 pub type TokenID = usize;
@@ -115,6 +117,25 @@ impl Program {
         Self::dump_ast(tokens, &ast.lhs, retract + 2);
         println!("{}rhs:", " ".repeat(retract));
         Self::dump_ast(tokens, &ast.rhs, retract + 2);
+      }
+
+      NodeKind::NdAssign => {
+        println!("{}=:", " ".repeat(retract));
+
+        println!("{}lhs:", " ".repeat(retract));
+        Self::dump_ast(tokens, &ast.lhs, retract + 2);
+        println!("{}rhs:", " ".repeat(retract));
+        Self::dump_ast(tokens, &ast.rhs, retract + 2);
+      }
+
+      NodeKind::NdExprStmp => {
+        println!("{}ExprStmp:", " ".repeat(retract));
+        Self::dump_ast(tokens, &ast.lhs, retract + 2);
+      }
+
+      NodeKind::NdVar => {
+        let token = &tokens[ast.token_id];
+        println!("{}NdVar: {}", " ".repeat(retract), token.tok);
       }
 
       _ => unreachable!(),

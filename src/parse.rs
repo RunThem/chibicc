@@ -2,7 +2,7 @@ use crate::{
   ast::{Node, NodeKind, Program, TokenID},
   tokenize::{
     Token,
-    TokenKind::{self, TkNum},
+    TokenKind::{self, TkIdent, TkNum},
     Tokenizer,
   },
   utils::Mbox,
@@ -66,9 +66,20 @@ impl Program {
     node
   }
 
-  // expr = equality
+  // expr = assign
   fn expr(&mut self) -> Mbox<Node> {
-    self.equality()
+    self.assign()
+  }
+
+  // assign = equality ("=" assign)?
+  fn assign(&mut self) -> Mbox<Node> {
+    let node = self.equality();
+
+    if self.consume("=") {
+      return Mbox::new(Node::from_binary(NodeKind::NdAssign, node, self.assign()));
+    }
+
+    node
   }
 
   // equality = relational ("==" relational | "!=" relational)*
@@ -179,7 +190,7 @@ impl Program {
     self.primary()
   }
 
-  // primary = "(" expr ")" | num
+  // primary = "(" expr ")" | num | ident
   fn primary(&mut self) -> Mbox<Node> {
     if self.consume("(") {
       let node = self.add();
@@ -193,6 +204,16 @@ impl Program {
       && token.kind == TkNum
     {
       let mut node = Node::from_token(NodeKind::NdNum, self.pos);
+
+      self.pos += 1;
+
+      return Mbox::new(node);
+    }
+
+    if let token = self.peek()
+      && token.kind == TkIdent
+    {
+      let mut node = Node::from_token(NodeKind::NdVar, self.pos);
 
       self.pos += 1;
 

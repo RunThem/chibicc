@@ -3,6 +3,7 @@ use std::{ops::Index, ops::Range};
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum TokenKind {
+  TkIdent,
   TkPunct,
   TkNum,
   TkEof,
@@ -54,7 +55,8 @@ impl Tokenizer {
     let kind = match lexeme.token {
       clex::Token::Int => TokenKind::TkNum,
       clex::Token::Symbol => TokenKind::TkPunct,
-      _ => TokenKind::TkEof,
+      clex::Token::Identifier => TokenKind::TkIdent,
+      _ => unreachable!(),
     };
 
     let token = Token {

@@ -1,3 +1,9 @@
-// Commit: bf7081fba7d8c6b1cd8a12eb329697a5481c604e
+// Commit: a1ab0ff26f23c82f15180051204eeb6279747c9a
 
-fn main() {}
+#![allow(unused)]
+
+mod tokenize;
+
+fn main() {
+  let tokenizer = tokenize::Tokenizer::new("hello.cxx");
+}

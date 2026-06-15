@@ -4,7 +4,7 @@ use crate::{
 };
 
 // 抽象语法树节点类型
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NodeKind {
   NdNum, // Integer
   NdAdd, // +
@@ -12,6 +12,10 @@ pub enum NodeKind {
   NdMul, // *
   NdDiv, // /
   NdNeg, // unary -
+  NdEq,  // ==
+  NdNe,  // !=
+  NdLt,  // <
+  NdLe,  // <=
 }
 
 pub type TokenID = usize;
@@ -100,6 +104,19 @@ impl Program {
         println!("{}{}:", " ".repeat(retract), "-");
         Self::dump_ast(tokens, &ast.lhs, retract + 2);
       }
+
+      NodeKind::NdEq | NodeKind::NdNe | NodeKind::NdLt | NodeKind::NdLe => {
+        let op = ["==", "!=", "<", "<="][ast.kind as usize - NodeKind::NdEq as usize];
+
+        println!("{}{}:", " ".repeat(retract), op);
+
+        println!("{}lhs:", " ".repeat(retract));
+        Self::dump_ast(tokens, &ast.lhs, retract + 2);
+        println!("{}rhs:", " ".repeat(retract));
+        Self::dump_ast(tokens, &ast.rhs, retract + 2);
+      }
+
+      _ => unreachable!(),
     }
   }
 

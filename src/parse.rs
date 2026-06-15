@@ -44,8 +44,65 @@ impl Program {
     self.ast = self.expr();
   }
 
-  // expr = mul ("+" mul | "-" mul)*
+  // expr = equality
   fn expr(&mut self) -> Mbox<Node> {
+    self.equality()
+  }
+
+  // equality = relational ("==" relational | "!=" relational)*
+  fn equality(&mut self) -> Mbox<Node> {
+    let mut node = self.relational();
+
+    loop {
+      if self.consume("==") {
+        node = Mbox::new(Node::from_binary(NodeKind::NdEq, node, self.relational()));
+        continue;
+      }
+
+      if self.consume("!=") {
+        node = Mbox::new(Node::from_binary(NodeKind::NdNe, node, self.relational()));
+        continue;
+      }
+
+      break;
+    }
+
+    node
+  }
+
+  // relational = add ("<" add | "<=" add | ">" add | ">=" add)*
+  fn relational(&mut self) -> Mbox<Node> {
+    let mut node = self.add();
+
+    loop {
+      if self.consume("<") {
+        node = Mbox::new(Node::from_binary(NodeKind::NdLt, node, self.add()));
+        continue;
+      }
+
+      if self.consume("<=") {
+        node = Mbox::new(Node::from_binary(NodeKind::NdLe, node, self.add()));
+        continue;
+      }
+
+      if self.consume(">") {
+        node = Mbox::new(Node::from_binary(NodeKind::NdLt, self.add(), node));
+        continue;
+      }
+
+      if self.consume(">=") {
+        node = Mbox::new(Node::from_binary(NodeKind::NdLe, self.add(), node));
+        continue;
+      }
+
+      break;
+    }
+
+    node
+  }
+
+  // add = mul ("+" mul | "-" mul)*
+  fn add(&mut self) -> Mbox<Node> {
     let mut node = self.mul();
 
     loop {
@@ -103,7 +160,7 @@ impl Program {
   // primary = "(" expr ")" | num
   fn primary(&mut self) -> Mbox<Node> {
     if self.consume("(") {
-      let node = self.expr();
+      let node = self.add();
 
       self.expect(")");
 

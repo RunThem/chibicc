@@ -1,3 +1,4 @@
 [submodule "chibicc-c"]
 	path = chibicc-c
 	url = https://github.com/rui314/chibicc.git
+	ignore = all

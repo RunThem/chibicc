@@ -13,7 +13,7 @@ impl Program {
     Self {
       tokenizer,
       pos: 0,
-      ast: Mbox::nil(),
+      asts: Vec::new(),
     }
   }
 
@@ -41,7 +41,29 @@ impl Program {
   }
 
   pub fn parse(&mut self) {
-    self.ast = self.expr();
+    loop {
+      if self.peek().kind == TokenKind::TkEof {
+        break;
+      }
+
+      let ast = self.stmt();
+
+      self.asts.push(ast);
+    }
+  }
+
+  // stmp = expr-stmt
+  fn stmt(&mut self) -> Mbox<Node> {
+    self.expr_stmt()
+  }
+
+  // expr-stmp = expr ";"
+  fn expr_stmt(&mut self) -> Mbox<Node> {
+    let node = self.expr();
+
+    self.expect(";");
+
+    node
   }
 
   // expr = equality

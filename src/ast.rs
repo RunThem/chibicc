@@ -6,16 +6,17 @@ use crate::{
 // 抽象语法树节点类型
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NodeKind {
-  NdNum, // Integer
-  NdAdd, // +
-  NdSub, // -
-  NdMul, // *
-  NdDiv, // /
-  NdNeg, // unary -
-  NdEq,  // ==
-  NdNe,  // !=
-  NdLt,  // <
-  NdLe,  // <=
+  NdNum,      // Integer
+  NdAdd,      // +
+  NdSub,      // -
+  NdMul,      // *
+  NdDiv,      // /
+  NdNeg,      // unary -
+  NdEq,       // ==
+  NdNe,       // !=
+  NdLt,       // <
+  NdLe,       // <=
+  NdExprStmp, // Expression statement
 }
 
 pub type TokenID = usize;
@@ -72,7 +73,7 @@ impl Node {
 pub struct Program {
   pub tokenizer: Tokenizer,
   pub pos: TokenID,
-  pub ast: Mbox<Node>,
+  pub asts: Vec<Mbox<Node>>,
 }
 
 impl Program {
@@ -121,6 +122,9 @@ impl Program {
   }
 
   pub fn dump(&self) {
-    Self::dump_ast(&self.tokenizer.tokens, &self.ast, 0);
+    for (ast, idx) in self.asts.iter().zip(0..) {
+      println!("AST #{}:", idx);
+      Self::dump_ast(&self.tokenizer.tokens, ast, 2);
+    }
   }
 }

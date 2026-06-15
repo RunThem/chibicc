@@ -1,5 +1,5 @@
 use crate::{
-  ast::{Node, NodeKind, Program, TokenID},
+  ast::{Function, Node, NodeKind, Obj, Program, TokenID},
   tokenize::{
     Token,
     TokenKind::{self, TkIdent, TkNum},
@@ -13,7 +13,8 @@ impl Program {
     Self {
       tokenizer,
       pos: 0,
-      asts: Vec::new(),
+      asts: Mbox::nil(),
+      locals: Vec::new(),
     }
   }
 
@@ -41,6 +42,12 @@ impl Program {
   }
 
   pub fn parse(&mut self) {
+    let mut func = Function {
+      stack_size: 0,
+      locals: Vec::new(),
+      body: Vec::new(),
+    };
+
     loop {
       if self.peek().kind == TokenKind::TkEof {
         break;
@@ -48,8 +55,12 @@ impl Program {
 
       let ast = self.stmt();
 
-      self.asts.push(ast);
+      func.body.push(ast);
     }
+
+    func.locals = self.locals.clone();
+
+    self.asts = Mbox::new(func);
   }
 
   // stmp = expr-stmt
@@ -213,7 +224,24 @@ impl Program {
     if let token = self.peek()
       && token.kind == TkIdent
     {
-      let mut node = Node::from_token(NodeKind::NdVar, self.pos);
+      let var = self
+        .locals
+        .iter()
+        .position(|o| self.tokenizer[o.token_id].tok == token.tok);
+
+      let obj_id = match var {
+        Some(idx) => idx,
+        None => {
+          self.locals.push(Obj {
+            token_id: self.pos,
+            offset: 0,
+          });
+
+          self.locals.len() - 1
+        }
+      };
+
+      let node = Node::from_obj(obj_id);
 
       self.pos += 1;
 

@@ -31,6 +31,8 @@ pub struct Node {
   pub lhs: Mbox<Node>,
   pub rhs: Mbox<Node>,
 
+  pub obj: ObjID,
+
   pub token_id: TokenID,
 }
 
@@ -40,6 +42,7 @@ impl Node {
       kind,
       lhs: Mbox::nil(),
       rhs: Mbox::nil(),
+      obj: usize::MAX,
       token_id: usize::MAX,
     }
   }
@@ -49,6 +52,7 @@ impl Node {
       kind,
       lhs,
       rhs,
+      obj: usize::MAX,
       token_id: usize::MAX,
     }
   }
@@ -58,6 +62,7 @@ impl Node {
       kind,
       lhs: expr,
       rhs: Mbox::nil(),
+      obj: usize::MAX,
       token_id: usize::MAX,
     }
   }
@@ -67,19 +72,46 @@ impl Node {
       kind,
       lhs: Mbox::nil(),
       rhs: Mbox::nil(),
+      obj: usize::MAX,
       token_id,
     }
   }
+
+  pub fn from_obj(obj: ObjID) -> Self {
+    Self {
+      kind: NodeKind::NdVar,
+      lhs: Mbox::nil(),
+      rhs: Mbox::nil(),
+      obj,
+      token_id: usize::MAX,
+    }
+  }
+}
+
+pub type ObjID = usize;
+
+#[derive(Debug, Clone, Copy)]
+pub struct Obj {
+  pub(crate) token_id: TokenID,
+  pub(crate) offset: i32,
+}
+
+#[derive(Debug)]
+pub struct Function {
+  pub(crate) stack_size: i32,
+  pub(crate) locals: Vec<Obj>,
+  pub(crate) body: Vec<Mbox<Node>>,
 }
 
 pub struct Program {
   pub tokenizer: Tokenizer,
   pub pos: TokenID,
-  pub asts: Vec<Mbox<Node>>,
+  pub locals: Vec<Obj>,
+  pub asts: Mbox<Function>,
 }
 
 impl Program {
-  fn dump_ast(tokens: &Vec<Token>, ast: &Node, retract: usize) {
+  fn dump_ast(tokens: &Vec<Token>, objs: &Vec<Obj>, ast: &Node, retract: usize) {
     match ast.kind {
       NodeKind::NdNum => {
         let token = &tokens[ast.token_id];
@@ -98,14 +130,14 @@ impl Program {
         println!("{}{}:", " ".repeat(retract), op);
 
         println!("{}lhs:", " ".repeat(retract));
-        Self::dump_ast(tokens, &ast.lhs, retract + 2);
+        Self::dump_ast(tokens, objs, &ast.lhs, retract + 2);
         println!("{}rhs:", " ".repeat(retract));
-        Self::dump_ast(tokens, &ast.rhs, retract + 2);
+        Self::dump_ast(tokens, objs, &ast.rhs, retract + 2);
       }
 
       NodeKind::NdNeg => {
         println!("{}{}:", " ".repeat(retract), "-");
-        Self::dump_ast(tokens, &ast.lhs, retract + 2);
+        Self::dump_ast(tokens, objs, &ast.lhs, retract + 2);
       }
 
       NodeKind::NdEq | NodeKind::NdNe | NodeKind::NdLt | NodeKind::NdLe => {
@@ -114,27 +146,27 @@ impl Program {
         println!("{}{}:", " ".repeat(retract), op);
 
         println!("{}lhs:", " ".repeat(retract));
-        Self::dump_ast(tokens, &ast.lhs, retract + 2);
+        Self::dump_ast(tokens, objs, &ast.lhs, retract + 2);
         println!("{}rhs:", " ".repeat(retract));
-        Self::dump_ast(tokens, &ast.rhs, retract + 2);
+        Self::dump_ast(tokens, objs, &ast.rhs, retract + 2);
       }
 
       NodeKind::NdAssign => {
         println!("{}=:", " ".repeat(retract));
 
         println!("{}lhs:", " ".repeat(retract));
-        Self::dump_ast(tokens, &ast.lhs, retract + 2);
+        Self::dump_ast(tokens, objs, &ast.lhs, retract + 2);
         println!("{}rhs:", " ".repeat(retract));
-        Self::dump_ast(tokens, &ast.rhs, retract + 2);
+        Self::dump_ast(tokens, objs, &ast.rhs, retract + 2);
       }
 
       NodeKind::NdExprStmp => {
         println!("{}ExprStmp:", " ".repeat(retract));
-        Self::dump_ast(tokens, &ast.lhs, retract + 2);
+        Self::dump_ast(tokens, objs, &ast.lhs, retract + 2);
       }
 
       NodeKind::NdVar => {
-        let token = &tokens[ast.token_id];
+        let token = &tokens[objs[ast.obj].token_id];
         println!("{}NdVar: {}", " ".repeat(retract), token.tok);
       }
 
@@ -143,9 +175,16 @@ impl Program {
   }
 
   pub fn dump(&self) {
-    for (ast, idx) in self.asts.iter().zip(0..) {
-      println!("AST #{}:", idx);
-      Self::dump_ast(&self.tokenizer.tokens, ast, 2);
+    println!("stack-size: {}", self.asts.stack_size);
+
+    for local in &self.asts.locals {
+      let token = &self.tokenizer.tokens[local.token_id];
+      println!("local: {} (offset {})", token.tok, local.offset);
+    }
+
+    for (i, ast) in self.asts.body.iter().enumerate() {
+      println!("# {}:", i);
+      Self::dump_ast(&self.tokenizer.tokens, &self.asts.locals, ast, 0);
     }
   }
 }

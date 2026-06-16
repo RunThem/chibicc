@@ -48,7 +48,7 @@ impl Program {
   pub fn parse(&mut self) {
     self.consume("{");
 
-    let body = self.compound_stmp();
+    let body = self.compound_stmt();
 
     let mut func = Function {
       stack_size: 0,
@@ -63,6 +63,7 @@ impl Program {
   //      | "return" expr ";"
   //      | "(" compound-stmt
   //      | "if" "(" expr ")" stmp ("else" stmp)?
+  //      | "for" "(" expr-stmt expr? ";" expr? ")" stmp
   fn stmt(&mut self) -> Mbox<Node> {
     if self.consume("return") {
       let node = Mbox::new(Node::from_unary(NodeKind::NdReturn, self.expr()));
@@ -96,15 +97,48 @@ impl Program {
       return Mbox::new(node);
     }
 
+    if self.consume("for") {
+      self.expect("(");
+
+      let init = self.expr_stmt();
+
+      let cond = if !self.consume(";") {
+        self.expr()
+      } else {
+        Mbox::nil()
+      };
+
+      self.expect(";");
+
+      let inc = if !self.consume(")") {
+        self.expr()
+      } else {
+        Mbox::nil()
+      };
+
+      self.expect(")");
+
+      let body = self.stmt();
+
+      let mut node = Node::from(NodeKind::NdFor);
+
+      node.init = init;
+      node.cond = cond;
+      node.inc = inc;
+      node.then = body;
+
+      return Mbox::new(node);
+    }
+
     if self.consume("{") {
-      return self.compound_stmp();
+      return self.compound_stmt();
     }
 
     self.expr_stmt()
   }
 
-  // compound-stmt = stmp* "}"
-  fn compound_stmp(&mut self) -> Mbox<Node> {
+  // compound-stmt = stmt* "}"
+  fn compound_stmt(&mut self) -> Mbox<Node> {
     let mut node = Node::from(NdBlock);
 
     while !self.consume("}") {
@@ -114,7 +148,7 @@ impl Program {
     Mbox::new(node)
   }
 
-  // expr-stmp = expr? ";"
+  // expr-stmt = expr? ";"
   fn expr_stmt(&mut self) -> Mbox<Node> {
     if self.consume(";") {
       return Mbox::new(Node::from(NodeKind::NdBlock));

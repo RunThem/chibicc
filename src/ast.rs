@@ -19,6 +19,7 @@ pub enum NodeKind {
   NdAssign,   // =
   NdReturn,   // return
   NdIf,       // if
+  NdFor,      // for
   NdBlock,    // { ... }
   NdExprStmp, // Expression statement
   NdVar,      // Variable
@@ -34,10 +35,12 @@ pub struct Node {
   pub lhs: Mbox<Node>,
   pub rhs: Mbox<Node>,
 
-  // If 语句的子节点
+  // If 或 For 语句的子节点
   pub cond: Mbox<Node>,
   pub then: Mbox<Node>,
   pub els: Mbox<Node>,
+  pub init: Mbox<Node>,
+  pub inc: Mbox<Node>,
 
   // Block 语句的子节点
   pub body: Vec<Mbox<Node>>,
@@ -56,6 +59,8 @@ impl Node {
       cond: Mbox::nil(),
       then: Mbox::nil(),
       els: Mbox::nil(),
+      init: Mbox::nil(),
+      inc: Mbox::nil(),
 
       body: Vec::new(),
 
@@ -199,6 +204,22 @@ impl Program {
           println!("{}else:", " ".repeat(retract));
           Self::dump_ast(tokens, objs, &ast.els, retract + 2);
         }
+      }
+
+      NodeKind::NdFor => {
+        println!("{}for:", " ".repeat(retract));
+
+        println!("{}init:", " ".repeat(retract));
+        Self::dump_ast(tokens, objs, &ast.init, retract + 2);
+
+        println!("{}cond:", " ".repeat(retract));
+        Self::dump_ast(tokens, objs, &ast.cond, retract + 2);
+
+        println!("{}inc:", " ".repeat(retract));
+        Self::dump_ast(tokens, objs, &ast.inc, retract + 2);
+
+        println!("{}body:", " ".repeat(retract));
+        Self::dump_ast(tokens, objs, &ast.then, retract + 2);
       }
 
       _ => unreachable!(),

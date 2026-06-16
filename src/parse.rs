@@ -89,9 +89,13 @@ impl Program {
     Mbox::new(node)
   }
 
-  // expr-stmp = expr ";"
+  // expr-stmp = expr? ";"
   fn expr_stmt(&mut self) -> Mbox<Node> {
-    let node = self.expr();
+    if self.consume(";") {
+      return Mbox::new(Node::from(NodeKind::NdBlock));
+    }
+
+    let node = Mbox::new(Node::from_unary(NodeKind::NdExprStmp, self.expr()));
 
     self.expect(";");
 

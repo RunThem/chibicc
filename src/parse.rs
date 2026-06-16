@@ -1,5 +1,9 @@
 use crate::{
-  ast::{Function, Node, NodeKind, Obj, Program, TokenID},
+  ast::{
+    Function, Node,
+    NodeKind::{self, NdBlock},
+    Obj, Program, TokenID,
+  },
   tokenize::{
     Token,
     TokenKind::{self, TkIdent, TkNum},
@@ -42,29 +46,22 @@ impl Program {
   }
 
   pub fn parse(&mut self) {
+    self.consume("{");
+
+    let body = self.compound_stmp();
+
     let mut func = Function {
       stack_size: 0,
-      locals: Vec::new(),
-      body: Vec::new(),
+      body: body,
+      locals: self.locals.clone(),
     };
-
-    loop {
-      if self.peek().kind == TokenKind::TkEof {
-        break;
-      }
-
-      let ast = self.stmt();
-
-      func.body.push(ast);
-    }
-
-    func.locals = self.locals.clone();
 
     self.asts = Mbox::new(func);
   }
 
   // stmp = expr-stmt
   //      | "return" expr ";"
+  //      | "(" compound-stmt
   fn stmt(&mut self) -> Mbox<Node> {
     if self.consume("return") {
       let node = Mbox::new(Node::from_unary(NodeKind::NdReturn, self.expr()));
@@ -74,7 +71,22 @@ impl Program {
       return node;
     }
 
+    if self.consume("{") {
+      return self.compound_stmp();
+    }
+
     self.expr_stmt()
+  }
+
+  // compound-stmt = stmp* "}"
+  fn compound_stmp(&mut self) -> Mbox<Node> {
+    let mut node = Node::from(NdBlock);
+
+    while !self.consume("}") {
+      node.body.push(self.stmt());
+    }
+
+    Mbox::new(node)
   }
 
   // expr-stmp = expr ";"

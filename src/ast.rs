@@ -18,6 +18,7 @@ pub enum NodeKind {
   NdLe,       // <=
   NdAssign,   // =
   NdReturn,   // return
+  NdBlock,    // { ... }
   NdExprStmp, // Expression statement
   NdVar,      // Variable
 }
@@ -25,12 +26,14 @@ pub enum NodeKind {
 pub type TokenID = usize;
 
 // 抽象语法树节点
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Node {
   pub kind: NodeKind,
 
   pub lhs: Mbox<Node>,
   pub rhs: Mbox<Node>,
+
+  pub body: Vec<Mbox<Node>>,
 
   pub obj: ObjID,
 
@@ -43,6 +46,7 @@ impl Node {
       kind,
       lhs: Mbox::nil(),
       rhs: Mbox::nil(),
+      body: Vec::new(),
       obj: usize::MAX,
       token_id: usize::MAX,
     }
@@ -53,6 +57,7 @@ impl Node {
       kind,
       lhs,
       rhs,
+      body: Vec::new(),
       obj: usize::MAX,
       token_id: usize::MAX,
     }
@@ -63,6 +68,7 @@ impl Node {
       kind,
       lhs: expr,
       rhs: Mbox::nil(),
+      body: Vec::new(),
       obj: usize::MAX,
       token_id: usize::MAX,
     }
@@ -73,6 +79,7 @@ impl Node {
       kind,
       lhs: Mbox::nil(),
       rhs: Mbox::nil(),
+      body: Vec::new(),
       obj: usize::MAX,
       token_id,
     }
@@ -83,6 +90,7 @@ impl Node {
       kind: NodeKind::NdVar,
       lhs: Mbox::nil(),
       rhs: Mbox::nil(),
+      body: Vec::new(),
       obj,
       token_id: usize::MAX,
     }
@@ -101,7 +109,7 @@ pub struct Obj {
 pub struct Function {
   pub(crate) stack_size: i32,
   pub(crate) locals: Vec<Obj>,
-  pub(crate) body: Vec<Mbox<Node>>,
+  pub(crate) body: Mbox<Node>,
 }
 
 pub struct Program {
@@ -177,6 +185,14 @@ impl Program {
         Self::dump_ast(tokens, objs, &ast.lhs, retract + 2);
       }
 
+      NodeKind::NdBlock => {
+        println!("{}Block:", " ".repeat(retract));
+
+        for stmt in &ast.body {
+          Self::dump_ast(tokens, objs, stmt, retract + 2);
+        }
+      }
+
       _ => unreachable!(),
     }
   }
@@ -189,9 +205,11 @@ impl Program {
       println!("local: {} (offset {})", token.tok, local.offset);
     }
 
-    for (i, ast) in self.asts.body.iter().enumerate() {
-      println!("# {}:", i);
-      Self::dump_ast(&self.tokenizer.tokens, &self.asts.locals, ast, 0);
-    }
+    Self::dump_ast(
+      &self.tokenizer.tokens,
+      &self.asts.locals,
+      &self.asts.body,
+      0,
+    );
   }
 }

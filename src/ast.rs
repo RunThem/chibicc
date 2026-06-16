@@ -19,7 +19,7 @@ pub enum NodeKind {
   NdAssign,   // =
   NdReturn,   // return
   NdIf,       // if
-  NdFor,      // for
+  NdFor,      // for 或 while
   NdBlock,    // { ... }
   NdExprStmp, // Expression statement
   NdVar,      // Variable
@@ -209,14 +209,20 @@ impl Program {
       NodeKind::NdFor => {
         println!("{}for:", " ".repeat(retract));
 
-        println!("{}init:", " ".repeat(retract));
-        Self::dump_ast(tokens, objs, &ast.init, retract + 2);
+        if !ast.init.is_nil() {
+          println!("{}init:", " ".repeat(retract));
+          Self::dump_ast(tokens, objs, &ast.init, retract + 2);
+        }
 
-        println!("{}cond:", " ".repeat(retract));
-        Self::dump_ast(tokens, objs, &ast.cond, retract + 2);
+        if !ast.cond.is_nil() {
+          println!("{}cond:", " ".repeat(retract));
+          Self::dump_ast(tokens, objs, &ast.cond, retract + 2);
+        }
 
-        println!("{}inc:", " ".repeat(retract));
-        Self::dump_ast(tokens, objs, &ast.inc, retract + 2);
+        if !ast.inc.is_nil() {
+          println!("{}inc:", " ".repeat(retract));
+          Self::dump_ast(tokens, objs, &ast.inc, retract + 2);
+        }
 
         println!("{}body:", " ".repeat(retract));
         Self::dump_ast(tokens, objs, &ast.then, retract + 2);

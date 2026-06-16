@@ -45,13 +45,12 @@ pub struct Node {
   // Block 语句的子节点
   pub body: Vec<Mbox<Node>>,
 
-  pub obj: ObjID,
-
+  pub obj_id: ObjID,
   pub token_id: TokenID,
 }
 
 impl Node {
-  pub fn from(kind: NodeKind) -> Self {
+  pub fn from(kind: NodeKind, token_id: TokenID) -> Self {
     Self {
       kind,
       lhs: Mbox::nil(),
@@ -64,33 +63,27 @@ impl Node {
 
       body: Vec::new(),
 
-      obj: usize::MAX,
-      token_id: usize::MAX,
+      obj_id: usize::MAX,
+      token_id: token_id,
     }
   }
 
-  pub fn from_binary(kind: NodeKind, lhs: Mbox<Node>, rhs: Mbox<Node>) -> Self {
-    let mut this = Self::from(kind);
+  pub fn from_binary(kind: NodeKind, lhs: Mbox<Node>, rhs: Mbox<Node>, token_id: TokenID) -> Self {
+    let mut this = Self::from(kind, token_id);
     this.lhs = lhs;
     this.rhs = rhs;
     this
   }
 
-  pub fn from_unary(kind: NodeKind, expr: Mbox<Node>) -> Self {
-    let mut this = Self::from(kind);
+  pub fn from_unary(kind: NodeKind, expr: Mbox<Node>, token_id: TokenID) -> Self {
+    let mut this = Self::from(kind, token_id);
     this.lhs = expr;
     this
   }
 
-  pub fn from_token(kind: NodeKind, token_id: TokenID) -> Self {
-    let mut this = Self::from(kind);
-    this.token_id = token_id;
-    this
-  }
-
-  pub fn from_obj(obj: ObjID) -> Self {
-    let mut this = Self::from(NodeKind::NdVar);
-    this.obj = obj;
+  pub fn from_obj(obj: ObjID, token_id: TokenID) -> Self {
+    let mut this = Self::from(NodeKind::NdVar, token_id);
+    this.obj_id = obj;
     this
   }
 }
@@ -173,7 +166,7 @@ impl Program {
       }
 
       NodeKind::NdVar => {
-        let token = &tokens[objs[ast.obj].token_id];
+        let token = &tokens[objs[ast.obj_id].token_id];
         println!("{}NdVar: {}", " ".repeat(retract), token.tok);
       }
 

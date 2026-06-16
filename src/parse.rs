@@ -67,7 +67,7 @@ impl Program {
   //      | "while" "(" expr ")" stmp
   fn stmt(&mut self) -> Mbox<Node> {
     if self.consume("return") {
-      let node = Mbox::new(Node::from_unary(NodeKind::NdReturn, self.expr()));
+      let node = Mbox::new(Node::from_unary(NodeKind::NdReturn, self.expr(), self.pos));
 
       self.expect(";");
 
@@ -89,7 +89,7 @@ impl Program {
         Mbox::nil()
       };
 
-      let mut node = Node::from(NodeKind::NdIf);
+      let mut node = Node::from(NodeKind::NdIf, self.pos);
 
       node.cond = cond;
       node.then = then;
@@ -125,7 +125,7 @@ impl Program {
 
       let body = self.stmt();
 
-      let mut node = Node::from(NodeKind::NdFor);
+      let mut node = Node::from(NodeKind::NdFor, self.pos);
 
       node.init = init;
       node.cond = cond;
@@ -144,7 +144,7 @@ impl Program {
 
       let body = self.stmt();
 
-      let mut node = Node::from(NodeKind::NdFor);
+      let mut node = Node::from(NodeKind::NdFor, self.pos);
 
       node.cond = cond;
       node.then = body;
@@ -161,7 +161,7 @@ impl Program {
 
   // compound-stmt = stmt* "}"
   fn compound_stmt(&mut self) -> Mbox<Node> {
-    let mut node = Node::from(NdBlock);
+    let mut node = Node::from(NdBlock, self.pos);
 
     while !self.consume("}") {
       node.body.push(self.stmt());
@@ -173,10 +173,14 @@ impl Program {
   // expr-stmt = expr? ";"
   fn expr_stmt(&mut self) -> Mbox<Node> {
     if self.consume(";") {
-      return Mbox::new(Node::from(NodeKind::NdBlock));
+      return Mbox::new(Node::from(NodeKind::NdBlock, self.pos));
     }
 
-    let node = Mbox::new(Node::from_unary(NodeKind::NdExprStmp, self.expr()));
+    let node = Mbox::new(Node::from_unary(
+      NodeKind::NdExprStmp,
+      self.expr(),
+      self.pos,
+    ));
 
     self.expect(";");
 
@@ -193,7 +197,12 @@ impl Program {
     let node = self.equality();
 
     if self.consume("=") {
-      return Mbox::new(Node::from_binary(NodeKind::NdAssign, node, self.assign()));
+      return Mbox::new(Node::from_binary(
+        NodeKind::NdAssign,
+        node,
+        self.assign(),
+        self.pos,
+      ));
     }
 
     node
@@ -205,12 +214,22 @@ impl Program {
 
     loop {
       if self.consume("==") {
-        node = Mbox::new(Node::from_binary(NodeKind::NdEq, node, self.relational()));
+        node = Mbox::new(Node::from_binary(
+          NodeKind::NdEq,
+          node,
+          self.relational(),
+          self.pos,
+        ));
         continue;
       }
 
       if self.consume("!=") {
-        node = Mbox::new(Node::from_binary(NodeKind::NdNe, node, self.relational()));
+        node = Mbox::new(Node::from_binary(
+          NodeKind::NdNe,
+          node,
+          self.relational(),
+          self.pos,
+        ));
         continue;
       }
 
@@ -226,22 +245,42 @@ impl Program {
 
     loop {
       if self.consume("<") {
-        node = Mbox::new(Node::from_binary(NodeKind::NdLt, node, self.add()));
+        node = Mbox::new(Node::from_binary(
+          NodeKind::NdLt,
+          node,
+          self.add(),
+          self.pos,
+        ));
         continue;
       }
 
       if self.consume("<=") {
-        node = Mbox::new(Node::from_binary(NodeKind::NdLe, node, self.add()));
+        node = Mbox::new(Node::from_binary(
+          NodeKind::NdLe,
+          node,
+          self.add(),
+          self.pos,
+        ));
         continue;
       }
 
       if self.consume(">") {
-        node = Mbox::new(Node::from_binary(NodeKind::NdLt, self.add(), node));
+        node = Mbox::new(Node::from_binary(
+          NodeKind::NdLt,
+          self.add(),
+          node,
+          self.pos,
+        ));
         continue;
       }
 
       if self.consume(">=") {
-        node = Mbox::new(Node::from_binary(NodeKind::NdLe, self.add(), node));
+        node = Mbox::new(Node::from_binary(
+          NodeKind::NdLe,
+          self.add(),
+          node,
+          self.pos,
+        ));
         continue;
       }
 
@@ -257,12 +296,22 @@ impl Program {
 
     loop {
       if self.consume("+") {
-        node = Mbox::new(Node::from_binary(NodeKind::NdAdd, node, self.mul()));
+        node = Mbox::new(Node::from_binary(
+          NodeKind::NdAdd,
+          node,
+          self.mul(),
+          self.pos,
+        ));
         continue;
       }
 
       if self.consume("-") {
-        node = Mbox::new(Node::from_binary(NodeKind::NdSub, node, self.mul()));
+        node = Mbox::new(Node::from_binary(
+          NodeKind::NdSub,
+          node,
+          self.mul(),
+          self.pos,
+        ));
         continue;
       }
 
@@ -278,12 +327,22 @@ impl Program {
 
     loop {
       if self.consume("*") {
-        node = Mbox::new(Node::from_binary(NodeKind::NdMul, node, self.unary()));
+        node = Mbox::new(Node::from_binary(
+          NodeKind::NdMul,
+          node,
+          self.unary(),
+          self.pos,
+        ));
         continue;
       }
 
       if self.consume("/") {
-        node = Mbox::new(Node::from_binary(NodeKind::NdDiv, node, self.unary()));
+        node = Mbox::new(Node::from_binary(
+          NodeKind::NdDiv,
+          node,
+          self.unary(),
+          self.pos,
+        ));
         continue;
       }
 
@@ -301,7 +360,7 @@ impl Program {
     }
 
     if self.consume("-") {
-      return Mbox::new(Node::from_unary(NodeKind::NdNeg, self.unary()));
+      return Mbox::new(Node::from_unary(NodeKind::NdNeg, self.unary(), self.pos));
     }
 
     self.primary()
@@ -320,7 +379,7 @@ impl Program {
     if let token = self.peek()
       && token.kind == TkNum
     {
-      let mut node = Node::from_token(NodeKind::NdNum, self.pos);
+      let mut node = Node::from(NodeKind::NdNum, self.pos);
 
       self.pos += 1;
 
@@ -347,7 +406,7 @@ impl Program {
         }
       };
 
-      let node = Node::from_obj(obj_id);
+      let node = Node::from_obj(obj_id, self.pos);
 
       self.pos += 1;
 

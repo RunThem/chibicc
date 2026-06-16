@@ -18,6 +18,7 @@ pub enum NodeKind {
   NdLe,       // <=
   NdAssign,   // =
   NdReturn,   // return
+  NdIf,       // if
   NdBlock,    // { ... }
   NdExprStmp, // Expression statement
   NdVar,      // Variable
@@ -33,6 +34,12 @@ pub struct Node {
   pub lhs: Mbox<Node>,
   pub rhs: Mbox<Node>,
 
+  // If 语句的子节点
+  pub cond: Mbox<Node>,
+  pub then: Mbox<Node>,
+  pub els: Mbox<Node>,
+
+  // Block 语句的子节点
   pub body: Vec<Mbox<Node>>,
 
   pub obj: ObjID,
@@ -46,54 +53,40 @@ impl Node {
       kind,
       lhs: Mbox::nil(),
       rhs: Mbox::nil(),
+      cond: Mbox::nil(),
+      then: Mbox::nil(),
+      els: Mbox::nil(),
+
       body: Vec::new(),
+
       obj: usize::MAX,
       token_id: usize::MAX,
     }
   }
 
   pub fn from_binary(kind: NodeKind, lhs: Mbox<Node>, rhs: Mbox<Node>) -> Self {
-    Self {
-      kind,
-      lhs,
-      rhs,
-      body: Vec::new(),
-      obj: usize::MAX,
-      token_id: usize::MAX,
-    }
+    let mut this = Self::from(kind);
+    this.lhs = lhs;
+    this.rhs = rhs;
+    this
   }
 
   pub fn from_unary(kind: NodeKind, expr: Mbox<Node>) -> Self {
-    Self {
-      kind,
-      lhs: expr,
-      rhs: Mbox::nil(),
-      body: Vec::new(),
-      obj: usize::MAX,
-      token_id: usize::MAX,
-    }
+    let mut this = Self::from(kind);
+    this.lhs = expr;
+    this
   }
 
   pub fn from_token(kind: NodeKind, token_id: TokenID) -> Self {
-    Self {
-      kind,
-      lhs: Mbox::nil(),
-      rhs: Mbox::nil(),
-      body: Vec::new(),
-      obj: usize::MAX,
-      token_id,
-    }
+    let mut this = Self::from(kind);
+    this.token_id = token_id;
+    this
   }
 
   pub fn from_obj(obj: ObjID) -> Self {
-    Self {
-      kind: NodeKind::NdVar,
-      lhs: Mbox::nil(),
-      rhs: Mbox::nil(),
-      body: Vec::new(),
-      obj,
-      token_id: usize::MAX,
-    }
+    let mut this = Self::from(NodeKind::NdVar);
+    this.obj = obj;
+    this
   }
 }
 
@@ -190,6 +183,21 @@ impl Program {
 
         for stmt in &ast.body {
           Self::dump_ast(tokens, objs, stmt, retract + 2);
+        }
+      }
+
+      NodeKind::NdIf => {
+        println!("{}if:", " ".repeat(retract));
+
+        println!("{}cond:", " ".repeat(retract));
+        Self::dump_ast(tokens, objs, &ast.cond, retract + 2);
+
+        println!("{}then:", " ".repeat(retract));
+        Self::dump_ast(tokens, objs, &ast.then, retract + 2);
+
+        if !ast.els.is_nil() {
+          println!("{}else:", " ".repeat(retract));
+          Self::dump_ast(tokens, objs, &ast.els, retract + 2);
         }
       }
 

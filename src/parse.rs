@@ -62,6 +62,7 @@ impl Program {
   // stmp = expr-stmt
   //      | "return" expr ";"
   //      | "(" compound-stmt
+  //      | "if" "(" expr ")" stmp ("else" stmp)?
   fn stmt(&mut self) -> Mbox<Node> {
     if self.consume("return") {
       let node = Mbox::new(Node::from_unary(NodeKind::NdReturn, self.expr()));
@@ -69,6 +70,30 @@ impl Program {
       self.expect(";");
 
       return node;
+    }
+
+    if self.consume("if") {
+      self.expect("(");
+
+      let cond = self.expr();
+
+      self.expect(")");
+
+      let then = self.stmt();
+
+      let els = if self.consume("else") {
+        self.stmt()
+      } else {
+        Mbox::nil()
+      };
+
+      let mut node = Node::from(NodeKind::NdIf);
+
+      node.cond = cond;
+      node.then = then;
+      node.els = els;
+
+      return Mbox::new(node);
     }
 
     if self.consume("{") {

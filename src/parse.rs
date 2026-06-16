@@ -352,7 +352,7 @@ impl Program {
     node
   }
 
-  // unary = ("+" | "-") unary
+  // unary = ("+" | "-" | "*" | "&") unary
   //       | primary
   fn unary(&mut self) -> Mbox<Node> {
     if self.consume("+") {
@@ -361,6 +361,14 @@ impl Program {
 
     if self.consume("-") {
       return Mbox::new(Node::from_unary(NodeKind::NdNeg, self.unary(), self.pos));
+    }
+
+    if self.consume("&") {
+      return Mbox::new(Node::from_unary(NodeKind::NdAddr, self.unary(), self.pos));
+    }
+
+    if self.consume("*") {
+      return Mbox::new(Node::from_unary(NodeKind::NdDeref, self.unary(), self.pos));
     }
 
     self.primary()

@@ -17,6 +17,8 @@ pub enum NodeKind {
   NdLt,       // <
   NdLe,       // <=
   NdAssign,   // =
+  NdAddr,     // unary &
+  NdDeref,    // unary *
   NdReturn,   // return
   NdIf,       // if
   NdFor,      // for 或 while
@@ -219,6 +221,16 @@ impl Program {
 
         println!("{}body:", " ".repeat(retract));
         Self::dump_ast(tokens, objs, &ast.then, retract + 2);
+      }
+
+      NodeKind::NdAddr => {
+        println!("{}&:", " ".repeat(retract));
+        Self::dump_ast(tokens, objs, &ast.lhs, retract + 2);
+      }
+
+      NodeKind::NdDeref => {
+        println!("{}*:", " ".repeat(retract));
+        Self::dump_ast(tokens, objs, &ast.lhs, retract + 2);
       }
 
       _ => unreachable!(),

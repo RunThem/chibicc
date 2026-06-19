@@ -1,0 +1,1695 @@
+diff --git a/parse.c b/parse.c
+index 6acaeb8..6668057 100644
+--- a/parse.c
++++ b/parse.c
+@@ -80,6 +80,129 @@ struct InitDesg {
+   Obj *var;
+ };
+ 
++enum {
++  // Binding powers for the Pratt parser. A larger number binds tighter.
++  // `parse_expr_bp()` parses an expression while allowing operators whose
++  // binding power is at least `min_bp`.
++  BP_COMMA = 1,
++  BP_ASSIGN,
++  BP_COND,
++  BP_LOGOR,
++  BP_LOGAND,
++  BP_BITOR,
++  BP_BITXOR,
++  BP_BITAND,
++  BP_EQ,
++  BP_REL,
++  BP_SHIFT,
++  BP_ADD,
++  BP_MUL,
++};
++
++typedef enum {
++  OP_BINARY,
++  OP_ASSIGN,
++  OP_TO_ASSIGN,
++} OpAction;
++
++typedef struct {
++  char *op;
++  int bp;
++  NodeKind kind;
++  OpAction action;
++  bool swap;
++} OpInfo;
++
++typedef enum {
++  PFX_NOP,
++  PFX_NEG,
++  PFX_ADDR,
++  PFX_DEREF,
++  PFX_NOT,
++  PFX_BITNOT,
++  PFX_PREINC,
++  PFX_PREDEC,
++  PFX_LABELVAL,
++} PrefixAction;
++
++typedef struct {
++  char *op;
++  PrefixAction action;
++} PrefixInfo;
++
++typedef enum {
++  POST_FUNCALL,
++  POST_SUBSCRIPT,
++  POST_MEMBER,
++  POST_ARROW,
++  POST_INC,
++  POST_DEC,
++} PostfixAction;
++
++typedef struct {
++  char *op;
++  PostfixAction action;
++} PostfixInfo;
++
++// Small operator tables used by the Pratt parser.
++//
++// `bp` controls precedence. `action` tells the parser how to build the AST.
++// `swap` is only used for relational operators like `>` and `>=`, which are
++// parsed as the corresponding `<`/`<=` nodes with operands reversed.
++static OpInfo binops[] = {
++  {"||", BP_LOGOR, ND_LOGOR, OP_BINARY, false},
++  {"&&", BP_LOGAND, ND_LOGAND, OP_BINARY, false},
++  {"|",  BP_BITOR, ND_BITOR, OP_BINARY, false},
++  {"^",  BP_BITXOR, ND_BITXOR, OP_BINARY, false},
++  {"&",  BP_BITAND, ND_BITAND, OP_BINARY, false},
++  {"==", BP_EQ, ND_EQ, OP_BINARY, false},
++  {"!=", BP_EQ, ND_NE, OP_BINARY, false},
++  {"<",  BP_REL, ND_LT, OP_BINARY, false},
++  {"<=", BP_REL, ND_LE, OP_BINARY, false},
++  {">",  BP_REL, ND_LT, OP_BINARY, true},
++  {">=", BP_REL, ND_LE, OP_BINARY, true},
++  {"<<", BP_SHIFT, ND_SHL, OP_BINARY, false},
++  {">>", BP_SHIFT, ND_SHR, OP_BINARY, false},
++  {"+",  BP_ADD, ND_ADD, OP_BINARY, false},
++  {"-",  BP_ADD, ND_SUB, OP_BINARY, false},
++  {"*",  BP_MUL, ND_MUL, OP_BINARY, false},
++  {"/",  BP_MUL, ND_DIV, OP_BINARY, false},
++  {"%",  BP_MUL, ND_MOD, OP_BINARY, false},
++  {",",  BP_COMMA, ND_COMMA, OP_BINARY, false},
++  {"=",  BP_ASSIGN, ND_ASSIGN, OP_ASSIGN, false},
++  {"+=", BP_ASSIGN, ND_ADD, OP_TO_ASSIGN, false},
++  {"-=", BP_ASSIGN, ND_SUB, OP_TO_ASSIGN, false},
++  {"*=", BP_ASSIGN, ND_MUL, OP_TO_ASSIGN, false},
++  {"/=", BP_ASSIGN, ND_DIV, OP_TO_ASSIGN, false},
++  {"%=", BP_ASSIGN, ND_MOD, OP_TO_ASSIGN, false},
++  {"&=", BP_ASSIGN, ND_BITAND, OP_TO_ASSIGN, false},
++  {"|=", BP_ASSIGN, ND_BITOR, OP_TO_ASSIGN, false},
++  {"^=", BP_ASSIGN, ND_BITXOR, OP_TO_ASSIGN, false},
++  {"<<=", BP_ASSIGN, ND_SHL, OP_TO_ASSIGN, false},
++  {">>=", BP_ASSIGN, ND_SHR, OP_TO_ASSIGN, false},
++};
++
++static PrefixInfo prefixops[] = {
++  {"+", PFX_NOP},
++  {"-", PFX_NEG},
++  {"&", PFX_ADDR},
++  {"*", PFX_DEREF},
++  {"!", PFX_NOT},
++  {"~", PFX_BITNOT},
++  {"++", PFX_PREINC},
++  {"--", PFX_PREDEC},
++  {"&&", PFX_LABELVAL},
++};
++
++static PostfixInfo postfixops[] = {
++  {"(", POST_FUNCALL},
++  {"[", POST_SUBSCRIPT},
++  {".", POST_MEMBER},
++  {"->", POST_ARROW},
++  {"++", POST_INC},
++  {"--", POST_DEC},
++};
++
+ // All local variable instances created during parsing are
+ // accumulated to this list.
+ static Obj *locals;
+@@ -129,32 +252,51 @@ static int64_t eval2(Node *node, char ***label);
+ static int64_t eval_rval(Node *node, char ***label);
+ static bool is_const_expr(Node *node);
+ static Node *assign(Token **rest, Token *tok);
+-static Node *logor(Token **rest, Token *tok);
+ static double eval_double(Node *node);
+ static Node *conditional(Token **rest, Token *tok);
+-static Node *logand(Token **rest, Token *tok);
+-static Node *bitor(Token **rest, Token *tok);
+-static Node *bitxor(Token **rest, Token *tok);
+-static Node *bitand(Token **rest, Token *tok);
+-static Node *equality(Token **rest, Token *tok);
+-static Node *relational(Token **rest, Token *tok);
+-static Node *shift(Token **rest, Token *tok);
+-static Node *add(Token **rest, Token *tok);
+ static Node *new_add(Node *lhs, Node *rhs, Token *tok);
+ static Node *new_sub(Node *lhs, Node *rhs, Token *tok);
+-static Node *mul(Token **rest, Token *tok);
+-static Node *cast(Token **rest, Token *tok);
++static Node *to_assign(Node *binary);
+ static Member *get_struct_member(Type *ty, Token *tok);
+ static Type *struct_decl(Token **rest, Token *tok);
+ static Type *union_decl(Token **rest, Token *tok);
+-static Node *postfix(Token **rest, Token *tok);
+ static Node *funcall(Token **rest, Token *tok, Node *node);
+-static Node *unary(Token **rest, Token *tok);
+-static Node *primary(Token **rest, Token *tok);
+ static Token *parse_typedef(Token *tok, Type *basety);
+ static bool is_function(Token *tok);
+ static Token *function(Token *tok, Type *basety, VarAttr *attr);
+ static Token *global_variable(Token *tok, Type *basety, VarAttr *attr);
++static Node *new_inc_dec(Node *node, Token *tok, int addend);
++static Node *struct_ref(Node *node, Token *tok);
++static Node *generic_selection(Token **rest, Token *tok);
++static Node *parse_expr_bp(Token **rest, Token *tok, int min_bp);
++static Node *parse_prefix(Token **rest, Token *tok);
++static Node *parse_postfix(Token **rest, Token *tok);
++static Node *parse_primary(Token **rest, Token *tok);
++
++static OpInfo *find_binop(Token *tok) {
++  // The tables are intentionally tiny, so linear search keeps the code simple.
++  for (int i = 0; i < sizeof(binops) / sizeof(*binops); i++)
++    if (equal(tok, binops[i].op))
++      return &binops[i];
++  return NULL;
++}
++
++static PrefixInfo *find_prefixop(Token *tok) {
++  // Prefix operators are few enough that a linear scan is clearer than a
++  // bigger dispatch structure.
++  for (int i = 0; i < sizeof(prefixops) / sizeof(*prefixops); i++)
++    if (equal(tok, prefixops[i].op))
++      return &prefixops[i];
++  return NULL;
++}
++
++static PostfixInfo *find_postfixop(Token *tok) {
++  // Same idea as above: keep the operator inventory explicit and local.
++  for (int i = 0; i < sizeof(postfixops) / sizeof(*postfixops); i++)
++    if (equal(tok, postfixops[i].op))
++      return &postfixops[i];
++  return NULL;
++}
+ 
+ static int align_down(int n, int align) {
+   return align_to(n - align + 1, align);
+@@ -1801,6 +1943,41 @@ static Node *compound_stmt(Token **rest, Token *tok) {
+   return node;
+ }
+ 
++static Node *parse_binary_rhs(Node *lhs, Token **rest, Token *tok, OpInfo *op) {
++  Token *start = tok;
++  Token *rhs_tok = tok->next;
++  // Left-associative operators parse the right-hand side with a slightly
++  // higher minimum binding power. Assignment-like operators stay at the same
++  // binding power so they remain right-associative.
++  int rhs_bp = (op->action == OP_ASSIGN || op->action == OP_TO_ASSIGN) ? op->bp : op->bp + 1;
++  Node *rhs = parse_expr_bp(rest, rhs_tok, rhs_bp);
++
++  if (op->action == OP_ASSIGN)
++    return new_binary(ND_ASSIGN, lhs, rhs, start);
++
++  if (op->action == OP_TO_ASSIGN) {
++    Node *node;
++    if (op->kind == ND_ADD)
++      node = new_add(lhs, rhs, start);
++    else if (op->kind == ND_SUB)
++      node = new_sub(lhs, rhs, start);
++    else
++      node = new_binary(op->kind, lhs, rhs, start);
++    return to_assign(node);
++  }
++
++  if (op->kind == ND_ADD)
++    return new_add(lhs, rhs, start);
++
++  if (op->kind == ND_SUB)
++    return new_sub(lhs, rhs, start);
++
++  if (op->swap)
++    return new_binary(op->kind, rhs, lhs, start);
++
++  return new_binary(op->kind, lhs, rhs, start);
++}
++
+ // expr-stmt = expr? ";"
+ static Node *expr_stmt(Token **rest, Token *tok) {
+   if (equal(tok, ";")) {
+@@ -1814,215 +1991,553 @@ static Node *expr_stmt(Token **rest, Token *tok) {
+   return node;
+ }
+ 
+-// expr = assign ("," expr)?
+ static Node *expr(Token **rest, Token *tok) {
+-  Node *node = assign(&tok, tok);
+-
+-  if (equal(tok, ","))
+-    return new_binary(ND_COMMA, node, expr(rest, tok->next), tok);
++  return parse_expr_bp(rest, tok, BP_COMMA);
++}
+ 
+-  *rest = tok;
+-  return node;
++static Node *assign(Token **rest, Token *tok) {
++  return parse_expr_bp(rest, tok, BP_ASSIGN);
+ }
+ 
+-static int64_t eval(Node *node) {
+-  return eval2(node, NULL);
++static Node *conditional(Token **rest, Token *tok) {
++  return parse_expr_bp(rest, tok, BP_COND);
+ }
+ 
+-// Evaluate a given node as a constant expression.
+-//
+-// A constant expression is either just a number or ptr+n where ptr
+-// is a pointer to a global variable and n is a postiive/negative
+-// number. The latter form is accepted only as an initialization
+-// expression for a global variable.
+-static int64_t eval2(Node *node, char ***label) {
+-  add_type(node);
++static Node *parse_expr_bp(Token **rest, Token *tok, int min_bp) {
++  // Parse the left-hand side first, then keep consuming operators whose
++  // binding power is high enough to attach to the current expression.
++  Node *node = parse_prefix(&tok, tok);
+ 
+-  if (is_flonum(node->ty))
+-    return eval_double(node);
++  for (;;) {
++    if (equal(tok, "?")) {
++      Token *start = tok;
++      if (BP_COND < min_bp)
++        break;
+ 
+-  switch (node->kind) {
+-  case ND_ADD:
+-    return eval2(node->lhs, label) + eval(node->rhs);
+-  case ND_SUB:
+-    return eval2(node->lhs, label) - eval(node->rhs);
+-  case ND_MUL:
+-    return eval(node->lhs) * eval(node->rhs);
+-  case ND_DIV:
+-    if (node->ty->is_unsigned)
+-      return (uint64_t)eval(node->lhs) / eval(node->rhs);
+-    return eval(node->lhs) / eval(node->rhs);
+-  case ND_NEG:
+-    return -eval(node->lhs);
+-  case ND_MOD:
+-    if (node->ty->is_unsigned)
+-      return (uint64_t)eval(node->lhs) % eval(node->rhs);
+-    return eval(node->lhs) % eval(node->rhs);
+-  case ND_BITAND:
+-    return eval(node->lhs) & eval(node->rhs);
+-  case ND_BITOR:
+-    return eval(node->lhs) | eval(node->rhs);
+-  case ND_BITXOR:
+-    return eval(node->lhs) ^ eval(node->rhs);
+-  case ND_SHL:
+-    return eval(node->lhs) << eval(node->rhs);
+-  case ND_SHR:
+-    if (node->ty->is_unsigned && node->ty->size == 8)
+-      return (uint64_t)eval(node->lhs) >> eval(node->rhs);
+-    return eval(node->lhs) >> eval(node->rhs);
+-  case ND_EQ:
+-    return eval(node->lhs) == eval(node->rhs);
+-  case ND_NE:
+-    return eval(node->lhs) != eval(node->rhs);
+-  case ND_LT:
+-    if (node->lhs->ty->is_unsigned)
+-      return (uint64_t)eval(node->lhs) < eval(node->rhs);
+-    return eval(node->lhs) < eval(node->rhs);
+-  case ND_LE:
+-    if (node->lhs->ty->is_unsigned)
+-      return (uint64_t)eval(node->lhs) <= eval(node->rhs);
+-    return eval(node->lhs) <= eval(node->rhs);
+-  case ND_COND:
+-    return eval(node->cond) ? eval2(node->then, label) : eval2(node->els, label);
+-  case ND_COMMA:
+-    return eval2(node->rhs, label);
+-  case ND_NOT:
+-    return !eval(node->lhs);
+-  case ND_BITNOT:
+-    return ~eval(node->lhs);
+-  case ND_LOGAND:
+-    return eval(node->lhs) && eval(node->rhs);
+-  case ND_LOGOR:
+-    return eval(node->lhs) || eval(node->rhs);
+-  case ND_CAST: {
+-    int64_t val = eval2(node->lhs, label);
+-    if (is_integer(node->ty)) {
+-      switch (node->ty->size) {
+-      case 1: return node->ty->is_unsigned ? (uint8_t)val : (int8_t)val;
+-      case 2: return node->ty->is_unsigned ? (uint16_t)val : (int16_t)val;
+-      case 4: return node->ty->is_unsigned ? (uint32_t)val : (int32_t)val;
++      if (equal(tok->next, ":")) {
++        // [GNU] The omitted-middle form is a special case, not a general
++        // ternary. We preserve the value of the condition in a temp so the
++        // AST matches the usual `a ? a : b` semantics without duplicating
++        // side effects.
++        add_type(node);
++        Obj *var = new_lvar("", node->ty);
++        Node *lhs = new_binary(ND_ASSIGN, new_var_node(var, tok), node, tok);
++        Node *rhs = new_node(ND_COND, tok);
++        rhs->cond = new_var_node(var, tok);
++        rhs->then = new_var_node(var, tok);
++        rhs->els = conditional(&tok, tok->next->next);
++        *rest = tok;
++        return new_binary(ND_COMMA, lhs, rhs, start);
+       }
++
++      Node *cond = new_node(ND_COND, tok);
++      cond->cond = node;
++      cond->then = expr(&tok, tok->next);
++      tok = skip(tok, ":");
++      cond->els = conditional(&tok, tok);
++      node = cond;
++      continue;
+     }
+-    return val;
+-  }
+-  case ND_ADDR:
+-    return eval_rval(node->lhs, label);
+-  case ND_LABEL_VAL:
+-    *label = &node->unique_label;
+-    return 0;
+-  case ND_MEMBER:
+-    if (!label)
+-      error_tok(node->tok, "not a compile-time constant");
+-    if (node->ty->kind != TY_ARRAY)
+-      error_tok(node->tok, "invalid initializer");
+-    return eval_rval(node->lhs, label) + node->member->offset;
+-  case ND_VAR:
+-    if (!label)
+-      error_tok(node->tok, "not a compile-time constant");
+-    if (node->var->ty->kind != TY_ARRAY && node->var->ty->kind != TY_FUNC)
+-      error_tok(node->tok, "invalid initializer");
+-    *label = &node->var->name;
+-    return 0;
+-  case ND_NUM:
+-    return node->val;
+-  }
+ 
+-  error_tok(node->tok, "not a compile-time constant");
+-}
++    OpInfo *op = find_binop(tok);
++    if (!op)
++      break;
+ 
+-static int64_t eval_rval(Node *node, char ***label) {
+-  switch (node->kind) {
+-  case ND_VAR:
+-    if (node->var->is_local)
+-      error_tok(node->tok, "not a compile-time constant");
+-    *label = &node->var->name;
+-    return 0;
+-  case ND_DEREF:
+-    return eval2(node->lhs, label);
+-  case ND_MEMBER:
+-    return eval_rval(node->lhs, label) + node->member->offset;
++    if (op->bp < min_bp)
++      break;
++
++    node = parse_binary_rhs(node, &tok, tok, op);
+   }
+ 
+-  error_tok(node->tok, "invalid initializer");
++  *rest = tok;
++  return node;
+ }
+ 
+-static bool is_const_expr(Node *node) {
+-  add_type(node);
++static Node *parse_primary(Token **rest, Token *tok) {
++  Token *start = tok;
+ 
+-  switch (node->kind) {
+-  case ND_ADD:
+-  case ND_SUB:
+-  case ND_MUL:
+-  case ND_DIV:
+-  case ND_BITAND:
+-  case ND_BITOR:
+-  case ND_BITXOR:
+-  case ND_SHL:
+-  case ND_SHR:
+-  case ND_EQ:
+-  case ND_NE:
+-  case ND_LT:
+-  case ND_LE:
+-  case ND_LOGAND:
+-  case ND_LOGOR:
+-    return is_const_expr(node->lhs) && is_const_expr(node->rhs);
+-  case ND_COND:
+-    if (!is_const_expr(node->cond))
+-      return false;
+-    return is_const_expr(eval(node->cond) ? node->then : node->els);
+-  case ND_COMMA:
+-    return is_const_expr(node->rhs);
+-  case ND_NEG:
+-  case ND_NOT:
+-  case ND_BITNOT:
+-  case ND_CAST:
+-    return is_const_expr(node->lhs);
+-  case ND_NUM:
+-    return true;
++  if (equal(tok, "(") && equal(tok->next, "{")) {
++    // GNU statement expression: `({ ... })`.
++    Node *node = new_node(ND_STMT_EXPR, tok);
++    node->body = compound_stmt(&tok, tok->next->next)->body;
++    *rest = skip(tok, ")");
++    return node;
+   }
+ 
+-  return false;
+-}
++  if (equal(tok, "(")) {
++    // Parenthesized subexpression.
++    Node *node = expr(&tok, tok->next);
++    *rest = skip(tok, ")");
++    return node;
++  }
+ 
+-int64_t const_expr(Token **rest, Token *tok) {
+-  Node *node = conditional(rest, tok);
+-  return eval(node);
+-}
++  if (equal(tok, "sizeof") && equal(tok->next, "(") && is_typename(tok->next->next)) {
++    // `sizeof(type)` is handled here so it does not evaluate the operand.
++    Type *ty = typename(&tok, tok->next->next);
++    *rest = skip(tok, ")");
+ 
+-static double eval_double(Node *node) {
+-  add_type(node);
++    if (ty->kind == TY_VLA) {
++      if (ty->vla_size)
++        return new_var_node(ty->vla_size, tok);
+ 
+-  if (is_integer(node->ty)) {
+-    if (node->ty->is_unsigned)
+-      return (unsigned long)eval(node);
+-    return eval(node);
++      Node *lhs = compute_vla_size(ty, tok);
++      Node *rhs = new_var_node(ty->vla_size, tok);
++      return new_binary(ND_COMMA, lhs, rhs, tok);
++    }
++
++    return new_ulong(ty->size, start);
+   }
+ 
+-  switch (node->kind) {
+-  case ND_ADD:
+-    return eval_double(node->lhs) + eval_double(node->rhs);
+-  case ND_SUB:
+-    return eval_double(node->lhs) - eval_double(node->rhs);
+-  case ND_MUL:
+-    return eval_double(node->lhs) * eval_double(node->rhs);
+-  case ND_DIV:
+-    return eval_double(node->lhs) / eval_double(node->rhs);
+-  case ND_NEG:
+-    return -eval_double(node->lhs);
+-  case ND_COND:
+-    return eval_double(node->cond) ? eval_double(node->then) : eval_double(node->els);
+-  case ND_COMMA:
+-    return eval_double(node->rhs);
+-  case ND_CAST:
+-    if (is_flonum(node->lhs->ty))
+-      return eval_double(node->lhs);
+-    return eval(node->lhs);
+-  case ND_NUM:
+-    return node->fval;
++  if (equal(tok, "sizeof")) {
++    // `sizeof expr` still parses the operand as an expression, but only to
++    // determine its type.
++    Node *node = parse_prefix(rest, tok->next);
++    add_type(node);
++    if (node->ty->kind == TY_VLA)
++      return new_var_node(node->ty->vla_size, tok);
++    return new_ulong(node->ty->size, tok);
+   }
+ 
+-  error_tok(node->tok, "not a compile-time constant");
+-}
++  if (equal(tok, "_Alignof") && equal(tok->next, "(") && is_typename(tok->next->next)) {
++    // Type form of `_Alignof`.
++    Type *ty = typename(&tok, tok->next->next);
++    *rest = skip(tok, ")");
++    return new_ulong(ty->align, tok);
++  }
++
++  if (equal(tok, "_Alignof")) {
++    // Expression form of `_Alignof`.
++    Node *node = parse_prefix(rest, tok->next);
++    add_type(node);
++    return new_ulong(node->ty->align, tok);
++  }
++
++  if (equal(tok, "_Generic"))
++    return generic_selection(rest, tok->next);
++
++  if (equal(tok, "__builtin_types_compatible_p")) {
++    tok = skip(tok->next, "(");
++    Type *t1 = typename(&tok, tok);
++    tok = skip(tok, ",");
++    Type *t2 = typename(&tok, tok);
++    *rest = skip(tok, ")");
++    return new_num(is_compatible(t1, t2), start);
++  }
++
++  if (equal(tok, "__builtin_reg_class")) {
++    tok = skip(tok->next, "(");
++    Type *ty = typename(&tok, tok);
++    *rest = skip(tok, ")");
++
++    if (is_integer(ty) || ty->kind == TY_PTR)
++      return new_num(0, start);
++    if (is_flonum(ty))
++      return new_num(1, start);
++    return new_num(2, start);
++  }
++
++  if (equal(tok, "__builtin_compare_and_swap")) {
++    Node *node = new_node(ND_CAS, tok);
++    tok = skip(tok->next, "(");
++    node->cas_addr = assign(&tok, tok);
++    tok = skip(tok, ",");
++    node->cas_old = assign(&tok, tok);
++    tok = skip(tok, ",");
++    node->cas_new = assign(&tok, tok);
++    *rest = skip(tok, ")");
++    return node;
++  }
++
++  if (equal(tok, "__builtin_atomic_exchange")) {
++    Node *node = new_node(ND_EXCH, tok);
++    tok = skip(tok->next, "(");
++    node->lhs = assign(&tok, tok);
++    tok = skip(tok, ",");
++    node->rhs = assign(&tok, tok);
++    *rest = skip(tok, ")");
++    return node;
++  }
++
++  if (tok->kind == TK_IDENT) {
++    VarScope *sc = find_var(tok);
++    *rest = tok->next;
++
++    if (sc && sc->var && sc->var->is_function) {
++      if (current_fn)
++        strarray_push(&current_fn->refs, sc->var->name);
++      else
++        sc->var->is_root = true;
++    }
++
++    if (sc) {
++      if (sc->var)
++        return new_var_node(sc->var, tok);
++      if (sc->enum_ty)
++        return new_num(sc->enum_val, tok);
++    }
++
++    if (equal(tok->next, "("))
++      error_tok(tok, "implicit declaration of a function");
++    error_tok(tok, "undefined variable");
++  }
++
++  if (tok->kind == TK_STR) {
++    Obj *var = new_string_literal(tok->str, tok->ty);
++    *rest = tok->next;
++    return new_var_node(var, tok);
++  }
++
++  if (tok->kind == TK_NUM) {
++    Node *node;
++    if (is_flonum(tok->ty)) {
++      node = new_node(ND_NUM, tok);
++      node->fval = tok->fval;
++    } else {
++      node = new_num(tok->val, tok);
++    }
++
++    node->ty = tok->ty;
++    *rest = tok->next;
++    return node;
++  }
++
++  error_tok(tok, "expected an expression");
++}
++
++static Node *parse_postfix(Token **rest, Token *tok) {
++  Node *node = parse_primary(&tok, tok);
++
++  for (;;) {
++    PostfixInfo *op = find_postfixop(tok);
++    if (!op)
++      break;
++
++    if (op->action == POST_FUNCALL) {
++      // Function call binds tighter than every binary operator.
++      node = funcall(&tok, tok->next, node);
++      continue;
++    }
++
++    if (op->action == POST_SUBSCRIPT) {
++      // `x[y]` is lowered to `*(x+y)`.
++      Token *start = tok;
++      Node *idx = expr(&tok, tok->next);
++      tok = skip(tok, "]");
++      node = new_unary(ND_DEREF, new_add(node, idx, start), start);
++      continue;
++    }
++
++    if (op->action == POST_MEMBER) {
++      // Direct member access keeps the base object intact.
++      node = struct_ref(node, tok->next);
++      tok = tok->next->next;
++      continue;
++    }
++
++    if (op->action == POST_ARROW) {
++      // `x->y` is lowered to `(*x).y`.
++      node = new_unary(ND_DEREF, node, tok);
++      node = struct_ref(node, tok->next);
++      tok = tok->next->next;
++      continue;
++    }
++
++    if (op->action == POST_INC) {
++      // Postfix increment/decrement must preserve the original value.
++      node = new_inc_dec(node, tok, 1);
++      tok = tok->next;
++      continue;
++    }
++
++    if (op->action == POST_DEC) {
++      node = new_inc_dec(node, tok, -1);
++      tok = tok->next;
++      continue;
++    }
++  }
++
++  *rest = tok;
++  return node;
++}
++
++static Node *parse_prefix(Token **rest, Token *tok) {
++  PrefixInfo *op = find_prefixop(tok);
++  if (op) {
++    switch (op->action) {
++    case PFX_NOP:
++      // Unary `+` is a no-op.
++      return parse_prefix(rest, tok->next);
++    case PFX_NEG:
++      // Unary minus is just a node wrapper around the recursive operand.
++      return new_unary(ND_NEG, parse_prefix(rest, tok->next), tok);
++    case PFX_ADDR: {
++      // `&` needs type information so we can reject bitfields.
++      Node *lhs = parse_prefix(rest, tok->next);
++      add_type(lhs);
++      if (lhs->kind == ND_MEMBER && lhs->member->is_bitfield)
++        error_tok(tok, "cannot take address of bitfield");
++      return new_unary(ND_ADDR, lhs, tok);
++    }
++    case PFX_DEREF: {
++      // Dereferencing a function pointer is a C oddity: `*foo` is still
++      // `foo` when `foo` has function type.
++      Node *node = parse_prefix(rest, tok->next);
++      add_type(node);
++      if (node->ty->kind == TY_FUNC)
++        return node;
++      return new_unary(ND_DEREF, node, tok);
++    }
++    case PFX_NOT:
++      // Logical not and bitwise not are simple unary wrappers.
++      return new_unary(ND_NOT, parse_prefix(rest, tok->next), tok);
++    case PFX_BITNOT:
++      return new_unary(ND_BITNOT, parse_prefix(rest, tok->next), tok);
++    case PFX_PREINC:
++      // `++i` is lowered to `i += 1` so later passes only need assignment.
++      return to_assign(new_add(parse_prefix(rest, tok->next), new_num(1, tok), tok));
++    case PFX_PREDEC:
++      // `--i` follows the same lowering as `++i`.
++      return to_assign(new_sub(parse_prefix(rest, tok->next), new_num(1, tok), tok));
++    case PFX_LABELVAL: {
++      // GNU labels-as-values are captured directly as a node.
++      Node *node = new_node(ND_LABEL_VAL, tok);
++      node->label = get_ident(tok->next);
++      node->goto_next = gotos;
++      gotos = node;
++      *rest = tok->next->next;
++      return node;
++    }
++    }
++  }
++
++  if (equal(tok, "(") && is_typename(tok->next)) {
++    // Casts and compound literals both start with `(type ...)`, so the parser
++    // must peek ahead to decide whether this is a cast or a grouped expression.
++    Token *start = tok;
++    Type *ty = typename(&tok, tok->next);
++    tok = skip(tok, ")");
++
++    if (equal(tok, "{")) {
++      // Compound literal. Globals become anonymous globals; locals become a
++      // temp + comma expression so the initializer can be emitted as code.
++      if (scope->next == NULL) {
++        Obj *var = new_anon_gvar(ty);
++        gvar_initializer(rest, tok, var);
++        return new_var_node(var, start);
++      }
++
++      Obj *var = new_lvar("", ty);
++      Node *lhs = lvar_initializer(rest, tok, var);
++      Node *rhs = new_var_node(var, tok);
++      return new_binary(ND_COMMA, lhs, rhs, start);
++    }
++
++    Node *node = new_cast(parse_prefix(rest, tok), ty);
++    node->tok = start;
++    return node;
++  }
++
++  return parse_postfix(rest, tok);
++}
++
++static int64_t eval(Node *node) {
++  return eval2(node, NULL);
++}
++
++// Evaluate a given node as a constant expression.
++//
++// A constant expression is either just a number or ptr+n where ptr
++// is a pointer to a global variable and n is a postiive/negative
++// number. The latter form is accepted only as an initialization
++// expression for a global variable.
++static int64_t eval2(Node *node, char ***label) {
++  add_type(node);
++
++  if (is_flonum(node->ty))
++    return eval_double(node);
++
++  switch (node->kind) {
++  case ND_ADD:
++    return eval2(node->lhs, label) + eval(node->rhs);
++  case ND_SUB:
++    return eval2(node->lhs, label) - eval(node->rhs);
++  case ND_MUL:
++    return eval(node->lhs) * eval(node->rhs);
++  case ND_DIV:
++    if (node->ty->is_unsigned)
++      return (uint64_t)eval(node->lhs) / eval(node->rhs);
++    return eval(node->lhs) / eval(node->rhs);
++  case ND_NEG:
++    return -eval(node->lhs);
++  case ND_MOD:
++    if (node->ty->is_unsigned)
++      return (uint64_t)eval(node->lhs) % eval(node->rhs);
++    return eval(node->lhs) % eval(node->rhs);
++  case ND_BITAND:
++    return eval(node->lhs) & eval(node->rhs);
++  case ND_BITOR:
++    return eval(node->lhs) | eval(node->rhs);
++  case ND_BITXOR:
++    return eval(node->lhs) ^ eval(node->rhs);
++  case ND_SHL:
++    return eval(node->lhs) << eval(node->rhs);
++  case ND_SHR:
++    if (node->ty->is_unsigned && node->ty->size == 8)
++      return (uint64_t)eval(node->lhs) >> eval(node->rhs);
++    return eval(node->lhs) >> eval(node->rhs);
++  case ND_EQ:
++    return eval(node->lhs) == eval(node->rhs);
++  case ND_NE:
++    return eval(node->lhs) != eval(node->rhs);
++  case ND_LT:
++    if (node->lhs->ty->is_unsigned)
++      return (uint64_t)eval(node->lhs) < eval(node->rhs);
++    return eval(node->lhs) < eval(node->rhs);
++  case ND_LE:
++    if (node->lhs->ty->is_unsigned)
++      return (uint64_t)eval(node->lhs) <= eval(node->rhs);
++    return eval(node->lhs) <= eval(node->rhs);
++  case ND_COND:
++    return eval(node->cond) ? eval2(node->then, label) : eval2(node->els, label);
++  case ND_COMMA:
++    return eval2(node->rhs, label);
++  case ND_NOT:
++    return !eval(node->lhs);
++  case ND_BITNOT:
++    return ~eval(node->lhs);
++  case ND_LOGAND:
++    return eval(node->lhs) && eval(node->rhs);
++  case ND_LOGOR:
++    return eval(node->lhs) || eval(node->rhs);
++  case ND_CAST: {
++    int64_t val = eval2(node->lhs, label);
++    if (is_integer(node->ty)) {
++      switch (node->ty->size) {
++      case 1: return node->ty->is_unsigned ? (uint8_t)val : (int8_t)val;
++      case 2: return node->ty->is_unsigned ? (uint16_t)val : (int16_t)val;
++      case 4: return node->ty->is_unsigned ? (uint32_t)val : (int32_t)val;
++      }
++    }
++    return val;
++  }
++  case ND_ADDR:
++    return eval_rval(node->lhs, label);
++  case ND_LABEL_VAL:
++    *label = &node->unique_label;
++    return 0;
++  case ND_MEMBER:
++    if (!label)
++      error_tok(node->tok, "not a compile-time constant");
++    if (node->ty->kind != TY_ARRAY)
++      error_tok(node->tok, "invalid initializer");
++    return eval_rval(node->lhs, label) + node->member->offset;
++  case ND_VAR:
++    if (!label)
++      error_tok(node->tok, "not a compile-time constant");
++    if (node->var->ty->kind != TY_ARRAY && node->var->ty->kind != TY_FUNC)
++      error_tok(node->tok, "invalid initializer");
++    *label = &node->var->name;
++    return 0;
++  case ND_NUM:
++    return node->val;
++  }
++
++  error_tok(node->tok, "not a compile-time constant");
++}
++
++static int64_t eval_rval(Node *node, char ***label) {
++  switch (node->kind) {
++  case ND_VAR:
++    if (node->var->is_local)
++      error_tok(node->tok, "not a compile-time constant");
++    *label = &node->var->name;
++    return 0;
++  case ND_DEREF:
++    return eval2(node->lhs, label);
++  case ND_MEMBER:
++    return eval_rval(node->lhs, label) + node->member->offset;
++  }
++
++  error_tok(node->tok, "invalid initializer");
++}
++
++static bool is_const_expr(Node *node) {
++  add_type(node);
++
++  switch (node->kind) {
++  case ND_ADD:
++  case ND_SUB:
++  case ND_MUL:
++  case ND_DIV:
++  case ND_BITAND:
++  case ND_BITOR:
++  case ND_BITXOR:
++  case ND_SHL:
++  case ND_SHR:
++  case ND_EQ:
++  case ND_NE:
++  case ND_LT:
++  case ND_LE:
++  case ND_LOGAND:
++  case ND_LOGOR:
++    return is_const_expr(node->lhs) && is_const_expr(node->rhs);
++  case ND_COND:
++    if (!is_const_expr(node->cond))
++      return false;
++    return is_const_expr(eval(node->cond) ? node->then : node->els);
++  case ND_COMMA:
++    return is_const_expr(node->rhs);
++  case ND_NEG:
++  case ND_NOT:
++  case ND_BITNOT:
++  case ND_CAST:
++    return is_const_expr(node->lhs);
++  case ND_NUM:
++    return true;
++  }
++
++  return false;
++}
++
++int64_t const_expr(Token **rest, Token *tok) {
++  Node *node = conditional(rest, tok);
++  return eval(node);
++}
++
++static double eval_double(Node *node) {
++  add_type(node);
++
++  if (is_integer(node->ty)) {
++    if (node->ty->is_unsigned)
++      return (unsigned long)eval(node);
++    return eval(node);
++  }
++
++  switch (node->kind) {
++  case ND_ADD:
++    return eval_double(node->lhs) + eval_double(node->rhs);
++  case ND_SUB:
++    return eval_double(node->lhs) - eval_double(node->rhs);
++  case ND_MUL:
++    return eval_double(node->lhs) * eval_double(node->rhs);
++  case ND_DIV:
++    return eval_double(node->lhs) / eval_double(node->rhs);
++  case ND_NEG:
++    return -eval_double(node->lhs);
++  case ND_COND:
++    return eval_double(node->cond) ? eval_double(node->then) : eval_double(node->els);
++  case ND_COMMA:
++    return eval_double(node->rhs);
++  case ND_CAST:
++    if (is_flonum(node->lhs->ty))
++      return eval_double(node->lhs);
++    return eval(node->lhs);
++  case ND_NUM:
++    return node->fval;
++  }
++
++  error_tok(node->tok, "not a compile-time constant");
++}
+ 
+ // Convert op= operators to expressions containing an assignment.
+ //
+@@ -2136,408 +2651,78 @@ static Node *to_assign(Node *binary) {
+                           tok),
+                tok);
+ 
+-  return new_binary(ND_COMMA, expr1, expr2, tok);
+-}
+-
+-// assign    = conditional (assign-op assign)?
+-// assign-op = "=" | "+=" | "-=" | "*=" | "/=" | "%=" | "&=" | "|=" | "^="
+-//           | "<<=" | ">>="
+-static Node *assign(Token **rest, Token *tok) {
+-  Node *node = conditional(&tok, tok);
+-
+-  if (equal(tok, "="))
+-    return new_binary(ND_ASSIGN, node, assign(rest, tok->next), tok);
+-
+-  if (equal(tok, "+="))
+-    return to_assign(new_add(node, assign(rest, tok->next), tok));
+-
+-  if (equal(tok, "-="))
+-    return to_assign(new_sub(node, assign(rest, tok->next), tok));
+-
+-  if (equal(tok, "*="))
+-    return to_assign(new_binary(ND_MUL, node, assign(rest, tok->next), tok));
+-
+-  if (equal(tok, "/="))
+-    return to_assign(new_binary(ND_DIV, node, assign(rest, tok->next), tok));
+-
+-  if (equal(tok, "%="))
+-    return to_assign(new_binary(ND_MOD, node, assign(rest, tok->next), tok));
+-
+-  if (equal(tok, "&="))
+-    return to_assign(new_binary(ND_BITAND, node, assign(rest, tok->next), tok));
+-
+-  if (equal(tok, "|="))
+-    return to_assign(new_binary(ND_BITOR, node, assign(rest, tok->next), tok));
+-
+-  if (equal(tok, "^="))
+-    return to_assign(new_binary(ND_BITXOR, node, assign(rest, tok->next), tok));
+-
+-  if (equal(tok, "<<="))
+-    return to_assign(new_binary(ND_SHL, node, assign(rest, tok->next), tok));
+-
+-  if (equal(tok, ">>="))
+-    return to_assign(new_binary(ND_SHR, node, assign(rest, tok->next), tok));
+-
+-  *rest = tok;
+-  return node;
+-}
+-
+-// conditional = logor ("?" expr? ":" conditional)?
+-static Node *conditional(Token **rest, Token *tok) {
+-  Node *cond = logor(&tok, tok);
+-
+-  if (!equal(tok, "?")) {
+-    *rest = tok;
+-    return cond;
+-  }
+-
+-  if (equal(tok->next, ":")) {
+-    // [GNU] Compile `a ?: b` as `tmp = a, tmp ? tmp : b`.
+-    add_type(cond);
+-    Obj *var = new_lvar("", cond->ty);
+-    Node *lhs = new_binary(ND_ASSIGN, new_var_node(var, tok), cond, tok);
+-    Node *rhs = new_node(ND_COND, tok);
+-    rhs->cond = new_var_node(var, tok);
+-    rhs->then = new_var_node(var, tok);
+-    rhs->els = conditional(rest, tok->next->next);
+-    return new_binary(ND_COMMA, lhs, rhs, tok);
+-  }
+-
+-  Node *node = new_node(ND_COND, tok);
+-  node->cond = cond;
+-  node->then = expr(&tok, tok->next);
+-  tok = skip(tok, ":");
+-  node->els = conditional(rest, tok);
+-  return node;
+-}
+-
+-// logor = logand ("||" logand)*
+-static Node *logor(Token **rest, Token *tok) {
+-  Node *node = logand(&tok, tok);
+-  while (equal(tok, "||")) {
+-    Token *start = tok;
+-    node = new_binary(ND_LOGOR, node, logand(&tok, tok->next), start);
+-  }
+-  *rest = tok;
+-  return node;
+-}
+-
+-// logand = bitor ("&&" bitor)*
+-static Node *logand(Token **rest, Token *tok) {
+-  Node *node = bitor(&tok, tok);
+-  while (equal(tok, "&&")) {
+-    Token *start = tok;
+-    node = new_binary(ND_LOGAND, node, bitor(&tok, tok->next), start);
+-  }
+-  *rest = tok;
+-  return node;
+-}
+-
+-// bitor = bitxor ("|" bitxor)*
+-static Node *bitor(Token **rest, Token *tok) {
+-  Node *node = bitxor(&tok, tok);
+-  while (equal(tok, "|")) {
+-    Token *start = tok;
+-    node = new_binary(ND_BITOR, node, bitxor(&tok, tok->next), start);
+-  }
+-  *rest = tok;
+-  return node;
+-}
+-
+-// bitxor = bitand ("^" bitand)*
+-static Node *bitxor(Token **rest, Token *tok) {
+-  Node *node = bitand(&tok, tok);
+-  while (equal(tok, "^")) {
+-    Token *start = tok;
+-    node = new_binary(ND_BITXOR, node, bitand(&tok, tok->next), start);
+-  }
+-  *rest = tok;
+-  return node;
+-}
+-
+-// bitand = equality ("&" equality)*
+-static Node *bitand(Token **rest, Token *tok) {
+-  Node *node = equality(&tok, tok);
+-  while (equal(tok, "&")) {
+-    Token *start = tok;
+-    node = new_binary(ND_BITAND, node, equality(&tok, tok->next), start);
+-  }
+-  *rest = tok;
+-  return node;
+-}
+-
+-// equality = relational ("==" relational | "!=" relational)*
+-static Node *equality(Token **rest, Token *tok) {
+-  Node *node = relational(&tok, tok);
+-
+-  for (;;) {
+-    Token *start = tok;
+-
+-    if (equal(tok, "==")) {
+-      node = new_binary(ND_EQ, node, relational(&tok, tok->next), start);
+-      continue;
+-    }
+-
+-    if (equal(tok, "!=")) {
+-      node = new_binary(ND_NE, node, relational(&tok, tok->next), start);
+-      continue;
+-    }
+-
+-    *rest = tok;
+-    return node;
+-  }
+-}
+-
+-// relational = shift ("<" shift | "<=" shift | ">" shift | ">=" shift)*
+-static Node *relational(Token **rest, Token *tok) {
+-  Node *node = shift(&tok, tok);
+-
+-  for (;;) {
+-    Token *start = tok;
+-
+-    if (equal(tok, "<")) {
+-      node = new_binary(ND_LT, node, shift(&tok, tok->next), start);
+-      continue;
+-    }
+-
+-    if (equal(tok, "<=")) {
+-      node = new_binary(ND_LE, node, shift(&tok, tok->next), start);
+-      continue;
+-    }
+-
+-    if (equal(tok, ">")) {
+-      node = new_binary(ND_LT, shift(&tok, tok->next), node, start);
+-      continue;
+-    }
+-
+-    if (equal(tok, ">=")) {
+-      node = new_binary(ND_LE, shift(&tok, tok->next), node, start);
+-      continue;
+-    }
+-
+-    *rest = tok;
+-    return node;
+-  }
+-}
+-
+-// shift = add ("<<" add | ">>" add)*
+-static Node *shift(Token **rest, Token *tok) {
+-  Node *node = add(&tok, tok);
+-
+-  for (;;) {
+-    Token *start = tok;
+-
+-    if (equal(tok, "<<")) {
+-      node = new_binary(ND_SHL, node, add(&tok, tok->next), start);
+-      continue;
+-    }
+-
+-    if (equal(tok, ">>")) {
+-      node = new_binary(ND_SHR, node, add(&tok, tok->next), start);
+-      continue;
+-    }
+-
+-    *rest = tok;
+-    return node;
+-  }
+-}
+-
+-// In C, `+` operator is overloaded to perform the pointer arithmetic.
+-// If p is a pointer, p+n adds not n but sizeof(*p)*n to the value of p,
+-// so that p+n points to the location n elements (not bytes) ahead of p.
+-// In other words, we need to scale an integer value before adding to a
+-// pointer value. This function takes care of the scaling.
+-static Node *new_add(Node *lhs, Node *rhs, Token *tok) {
+-  add_type(lhs);
+-  add_type(rhs);
+-
+-  // num + num
+-  if (is_numeric(lhs->ty) && is_numeric(rhs->ty))
+-    return new_binary(ND_ADD, lhs, rhs, tok);
+-
+-  if (lhs->ty->base && rhs->ty->base)
+-    error_tok(tok, "invalid operands");
+-
+-  // Canonicalize `num + ptr` to `ptr + num`.
+-  if (!lhs->ty->base && rhs->ty->base) {
+-    Node *tmp = lhs;
+-    lhs = rhs;
+-    rhs = tmp;
+-  }
+-
+-  // VLA + num
+-  if (lhs->ty->base->kind == TY_VLA) {
+-    rhs = new_binary(ND_MUL, rhs, new_var_node(lhs->ty->base->vla_size, tok), tok);
+-    return new_binary(ND_ADD, lhs, rhs, tok);
+-  }
+-
+-  // ptr + num
+-  rhs = new_binary(ND_MUL, rhs, new_long(lhs->ty->base->size, tok), tok);
+-  return new_binary(ND_ADD, lhs, rhs, tok);
+-}
+-
+-// Like `+`, `-` is overloaded for the pointer type.
+-static Node *new_sub(Node *lhs, Node *rhs, Token *tok) {
+-  add_type(lhs);
+-  add_type(rhs);
+-
+-  // num - num
+-  if (is_numeric(lhs->ty) && is_numeric(rhs->ty))
+-    return new_binary(ND_SUB, lhs, rhs, tok);
+-
+-  // VLA + num
+-  if (lhs->ty->base->kind == TY_VLA) {
+-    rhs = new_binary(ND_MUL, rhs, new_var_node(lhs->ty->base->vla_size, tok), tok);
+-    add_type(rhs);
+-    Node *node = new_binary(ND_SUB, lhs, rhs, tok);
+-    node->ty = lhs->ty;
+-    return node;
+-  }
+-
+-  // ptr - num
+-  if (lhs->ty->base && is_integer(rhs->ty)) {
+-    rhs = new_binary(ND_MUL, rhs, new_long(lhs->ty->base->size, tok), tok);
+-    add_type(rhs);
+-    Node *node = new_binary(ND_SUB, lhs, rhs, tok);
+-    node->ty = lhs->ty;
+-    return node;
+-  }
+-
+-  // ptr - ptr, which returns how many elements are between the two.
+-  if (lhs->ty->base && rhs->ty->base) {
+-    Node *node = new_binary(ND_SUB, lhs, rhs, tok);
+-    node->ty = ty_long;
+-    return new_binary(ND_DIV, node, new_num(lhs->ty->base->size, tok), tok);
+-  }
+-
+-  error_tok(tok, "invalid operands");
+-}
+-
+-// add = mul ("+" mul | "-" mul)*
+-static Node *add(Token **rest, Token *tok) {
+-  Node *node = mul(&tok, tok);
+-
+-  for (;;) {
+-    Token *start = tok;
+-
+-    if (equal(tok, "+")) {
+-      node = new_add(node, mul(&tok, tok->next), start);
+-      continue;
+-    }
+-
+-    if (equal(tok, "-")) {
+-      node = new_sub(node, mul(&tok, tok->next), start);
+-      continue;
+-    }
+-
+-    *rest = tok;
+-    return node;
+-  }
+-}
+-
+-// mul = cast ("*" cast | "/" cast | "%" cast)*
+-static Node *mul(Token **rest, Token *tok) {
+-  Node *node = cast(&tok, tok);
+-
+-  for (;;) {
+-    Token *start = tok;
+-
+-    if (equal(tok, "*")) {
+-      node = new_binary(ND_MUL, node, cast(&tok, tok->next), start);
+-      continue;
+-    }
+-
+-    if (equal(tok, "/")) {
+-      node = new_binary(ND_DIV, node, cast(&tok, tok->next), start);
+-      continue;
+-    }
+-
+-    if (equal(tok, "%")) {
+-      node = new_binary(ND_MOD, node, cast(&tok, tok->next), start);
+-      continue;
+-    }
+-
+-    *rest = tok;
+-    return node;
+-  }
+-}
+-
+-// cast = "(" type-name ")" cast | unary
+-static Node *cast(Token **rest, Token *tok) {
+-  if (equal(tok, "(") && is_typename(tok->next)) {
+-    Token *start = tok;
+-    Type *ty = typename(&tok, tok->next);
+-    tok = skip(tok, ")");
+-
+-    // compound literal
+-    if (equal(tok, "{"))
+-      return unary(rest, start);
+-
+-    // type cast
+-    Node *node = new_cast(cast(rest, tok), ty);
+-    node->tok = start;
+-    return node;
+-  }
+-
+-  return unary(rest, tok);
++  return new_binary(ND_COMMA, expr1, expr2, tok);
+ }
+ 
+-// unary = ("+" | "-" | "*" | "&" | "!" | "~") cast
+-//       | ("++" | "--") unary
+-//       | "&&" ident
+-//       | postfix
+-static Node *unary(Token **rest, Token *tok) {
+-  if (equal(tok, "+"))
+-    return cast(rest, tok->next);
++// In C, `+` operator is overloaded to perform the pointer arithmetic.
++// If p is a pointer, p+n adds not n but sizeof(*p)*n to the value of p,
++// so that p+n points to the location n elements (not bytes) ahead of p.
++// In other words, we need to scale an integer value before adding to a
++// pointer value. This function takes care of the scaling.
++static Node *new_add(Node *lhs, Node *rhs, Token *tok) {
++  add_type(lhs);
++  add_type(rhs);
++
++  // num + num
++  if (is_numeric(lhs->ty) && is_numeric(rhs->ty))
++    return new_binary(ND_ADD, lhs, rhs, tok);
+ 
+-  if (equal(tok, "-"))
+-    return new_unary(ND_NEG, cast(rest, tok->next), tok);
++  if (lhs->ty->base && rhs->ty->base)
++    error_tok(tok, "invalid operands");
+ 
+-  if (equal(tok, "&")) {
+-    Node *lhs = cast(rest, tok->next);
+-    add_type(lhs);
+-    if (lhs->kind == ND_MEMBER && lhs->member->is_bitfield)
+-      error_tok(tok, "cannot take address of bitfield");
+-    return new_unary(ND_ADDR, lhs, tok);
++  // Canonicalize `num + ptr` to `ptr + num`.
++  if (!lhs->ty->base && rhs->ty->base) {
++    Node *tmp = lhs;
++    lhs = rhs;
++    rhs = tmp;
+   }
+ 
+-  if (equal(tok, "*")) {
+-    // [https://www.sigbus.info/n1570#6.5.3.2p4] This is an oddity
+-    // in the C spec, but dereferencing a function shouldn't do
+-    // anything. If foo is a function, `*foo`, `**foo` or `*****foo`
+-    // are all equivalent to just `foo`.
+-    Node *node = cast(rest, tok->next);
+-    add_type(node);
+-    if (node->ty->kind == TY_FUNC)
+-      return node;
+-    return new_unary(ND_DEREF, node, tok);
++  // VLA + num
++  if (lhs->ty->base->kind == TY_VLA) {
++    rhs = new_binary(ND_MUL, rhs, new_var_node(lhs->ty->base->vla_size, tok), tok);
++    return new_binary(ND_ADD, lhs, rhs, tok);
+   }
+ 
+-  if (equal(tok, "!"))
+-    return new_unary(ND_NOT, cast(rest, tok->next), tok);
++  // ptr + num
++  rhs = new_binary(ND_MUL, rhs, new_long(lhs->ty->base->size, tok), tok);
++  return new_binary(ND_ADD, lhs, rhs, tok);
++}
+ 
+-  if (equal(tok, "~"))
+-    return new_unary(ND_BITNOT, cast(rest, tok->next), tok);
++// Like `+`, `-` is overloaded for the pointer type.
++static Node *new_sub(Node *lhs, Node *rhs, Token *tok) {
++  add_type(lhs);
++  add_type(rhs);
+ 
+-  // Read ++i as i+=1
+-  if (equal(tok, "++"))
+-    return to_assign(new_add(unary(rest, tok->next), new_num(1, tok), tok));
++  // num - num
++  if (is_numeric(lhs->ty) && is_numeric(rhs->ty))
++    return new_binary(ND_SUB, lhs, rhs, tok);
+ 
+-  // Read --i as i-=1
+-  if (equal(tok, "--"))
+-    return to_assign(new_sub(unary(rest, tok->next), new_num(1, tok), tok));
++  // VLA + num
++  if (lhs->ty->base->kind == TY_VLA) {
++    rhs = new_binary(ND_MUL, rhs, new_var_node(lhs->ty->base->vla_size, tok), tok);
++    add_type(rhs);
++    Node *node = new_binary(ND_SUB, lhs, rhs, tok);
++    node->ty = lhs->ty;
++    return node;
++  }
+ 
+-  // [GNU] labels-as-values
+-  if (equal(tok, "&&")) {
+-    Node *node = new_node(ND_LABEL_VAL, tok);
+-    node->label = get_ident(tok->next);
+-    node->goto_next = gotos;
+-    gotos = node;
+-    *rest = tok->next->next;
++  // ptr - num
++  if (lhs->ty->base && is_integer(rhs->ty)) {
++    rhs = new_binary(ND_MUL, rhs, new_long(lhs->ty->base->size, tok), tok);
++    add_type(rhs);
++    Node *node = new_binary(ND_SUB, lhs, rhs, tok);
++    node->ty = lhs->ty;
+     return node;
+   }
+ 
+-  return postfix(rest, tok);
++  // ptr - ptr, which returns how many elements are between the two.
++  if (lhs->ty->base && rhs->ty->base) {
++    Node *node = new_binary(ND_SUB, lhs, rhs, tok);
++    node->ty = ty_long;
++    return new_binary(ND_DIV, node, new_num(lhs->ty->base->size, tok), tok);
++  }
++
++  error_tok(tok, "invalid operands");
+ }
+ 
+ // struct-members = (declspec declarator (","  declarator)* ";")*
+@@ -2794,83 +2979,6 @@ static Node *new_inc_dec(Node *node, Token *tok, int addend) {
+                   node->ty);
+ }
+ 
+-// postfix = "(" type-name ")" "{" initializer-list "}"
+-//         = ident "(" func-args ")" postfix-tail*
+-//         | primary postfix-tail*
+-//
+-// postfix-tail = "[" expr "]"
+-//              | "(" func-args ")"
+-//              | "." ident
+-//              | "->" ident
+-//              | "++"
+-//              | "--"
+-static Node *postfix(Token **rest, Token *tok) {
+-  if (equal(tok, "(") && is_typename(tok->next)) {
+-    // Compound literal
+-    Token *start = tok;
+-    Type *ty = typename(&tok, tok->next);
+-    tok = skip(tok, ")");
+-
+-    if (scope->next == NULL) {
+-      Obj *var = new_anon_gvar(ty);
+-      gvar_initializer(rest, tok, var);
+-      return new_var_node(var, start);
+-    }
+-
+-    Obj *var = new_lvar("", ty);
+-    Node *lhs = lvar_initializer(rest, tok, var);
+-    Node *rhs = new_var_node(var, tok);
+-    return new_binary(ND_COMMA, lhs, rhs, start);
+-  }
+-
+-  Node *node = primary(&tok, tok);
+-
+-  for (;;) {
+-    if (equal(tok, "(")) {
+-      node = funcall(&tok, tok->next, node);
+-      continue;
+-    }
+-
+-    if (equal(tok, "[")) {
+-      // x[y] is short for *(x+y)
+-      Token *start = tok;
+-      Node *idx = expr(&tok, tok->next);
+-      tok = skip(tok, "]");
+-      node = new_unary(ND_DEREF, new_add(node, idx, start), start);
+-      continue;
+-    }
+-
+-    if (equal(tok, ".")) {
+-      node = struct_ref(node, tok->next);
+-      tok = tok->next->next;
+-      continue;
+-    }
+-
+-    if (equal(tok, "->")) {
+-      // x->y is short for (*x).y
+-      node = new_unary(ND_DEREF, node, tok);
+-      node = struct_ref(node, tok->next);
+-      tok = tok->next->next;
+-      continue;
+-    }
+-
+-    if (equal(tok, "++")) {
+-      node = new_inc_dec(node, tok, 1);
+-      tok = tok->next;
+-      continue;
+-    }
+-
+-    if (equal(tok, "--")) {
+-      node = new_inc_dec(node, tok, -1);
+-      tok = tok->next;
+-      continue;
+-    }
+-
+-    *rest = tok;
+-    return node;
+-  }
+-}
+-
+ // funcall = (assign ("," assign)*)? ")"
+ static Node *funcall(Token **rest, Token *tok, Node *fn) {
+   add_type(fn);
+@@ -2968,165 +3076,6 @@ static Node *generic_selection(Token **rest, Token *tok) {
+   return ret;
+ }
+ 
+-// primary = "(" "{" stmt+ "}" ")"
+-//         | "(" expr ")"
+-//         | "sizeof" "(" type-name ")"
+-//         | "sizeof" unary
+-//         | "_Alignof" "(" type-name ")"
+-//         | "_Alignof" unary
+-//         | "_Generic" generic-selection
+-//         | "__builtin_types_compatible_p" "(" type-name, type-name, ")"
+-//         | "__builtin_reg_class" "(" type-name ")"
+-//         | ident
+-//         | str
+-//         | num
+-static Node *primary(Token **rest, Token *tok) {
+-  Token *start = tok;
+-
+-  if (equal(tok, "(") && equal(tok->next, "{")) {
+-    // This is a GNU statement expresssion.
+-    Node *node = new_node(ND_STMT_EXPR, tok);
+-    node->body = compound_stmt(&tok, tok->next->next)->body;
+-    *rest = skip(tok, ")");
+-    return node;
+-  }
+-
+-  if (equal(tok, "(")) {
+-    Node *node = expr(&tok, tok->next);
+-    *rest = skip(tok, ")");
+-    return node;
+-  }
+-
+-  if (equal(tok, "sizeof") && equal(tok->next, "(") && is_typename(tok->next->next)) {
+-    Type *ty = typename(&tok, tok->next->next);
+-    *rest = skip(tok, ")");
+-
+-    if (ty->kind == TY_VLA) {
+-      if (ty->vla_size)
+-        return new_var_node(ty->vla_size, tok);
+-
+-      Node *lhs = compute_vla_size(ty, tok);
+-      Node *rhs = new_var_node(ty->vla_size, tok);
+-      return new_binary(ND_COMMA, lhs, rhs, tok);
+-    }
+-
+-    return new_ulong(ty->size, start);
+-  }
+-
+-  if (equal(tok, "sizeof")) {
+-    Node *node = unary(rest, tok->next);
+-    add_type(node);
+-    if (node->ty->kind == TY_VLA)
+-      return new_var_node(node->ty->vla_size, tok);
+-    return new_ulong(node->ty->size, tok);
+-  }
+-
+-  if (equal(tok, "_Alignof") && equal(tok->next, "(") && is_typename(tok->next->next)) {
+-    Type *ty = typename(&tok, tok->next->next);
+-    *rest = skip(tok, ")");
+-    return new_ulong(ty->align, tok);
+-  }
+-
+-  if (equal(tok, "_Alignof")) {
+-    Node *node = unary(rest, tok->next);
+-    add_type(node);
+-    return new_ulong(node->ty->align, tok);
+-  }
+-
+-  if (equal(tok, "_Generic"))
+-    return generic_selection(rest, tok->next);
+-
+-  if (equal(tok, "__builtin_types_compatible_p")) {
+-    tok = skip(tok->next, "(");
+-    Type *t1 = typename(&tok, tok);
+-    tok = skip(tok, ",");
+-    Type *t2 = typename(&tok, tok);
+-    *rest = skip(tok, ")");
+-    return new_num(is_compatible(t1, t2), start);
+-  }
+-
+-  if (equal(tok, "__builtin_reg_class")) {
+-    tok = skip(tok->next, "(");
+-    Type *ty = typename(&tok, tok);
+-    *rest = skip(tok, ")");
+-
+-    if (is_integer(ty) || ty->kind == TY_PTR)
+-      return new_num(0, start);
+-    if (is_flonum(ty))
+-      return new_num(1, start);
+-    return new_num(2, start);
+-  }
+-
+-  if (equal(tok, "__builtin_compare_and_swap")) {
+-    Node *node = new_node(ND_CAS, tok);
+-    tok = skip(tok->next, "(");
+-    node->cas_addr = assign(&tok, tok);
+-    tok = skip(tok, ",");
+-    node->cas_old = assign(&tok, tok);
+-    tok = skip(tok, ",");
+-    node->cas_new = assign(&tok, tok);
+-    *rest = skip(tok, ")");
+-    return node;
+-  }
+-
+-  if (equal(tok, "__builtin_atomic_exchange")) {
+-    Node *node = new_node(ND_EXCH, tok);
+-    tok = skip(tok->next, "(");
+-    node->lhs = assign(&tok, tok);
+-    tok = skip(tok, ",");
+-    node->rhs = assign(&tok, tok);
+-    *rest = skip(tok, ")");
+-    return node;
+-  }
+-
+-  if (tok->kind == TK_IDENT) {
+-    // Variable or enum constant
+-    VarScope *sc = find_var(tok);
+-    *rest = tok->next;
+-
+-    // For "static inline" function
+-    if (sc && sc->var && sc->var->is_function) {
+-      if (current_fn)
+-        strarray_push(&current_fn->refs, sc->var->name);
+-      else
+-        sc->var->is_root = true;
+-    }
+-
+-    if (sc) {
+-      if (sc->var)
+-        return new_var_node(sc->var, tok);
+-      if (sc->enum_ty)
+-        return new_num(sc->enum_val, tok);
+-    }
+-
+-    if (equal(tok->next, "("))
+-      error_tok(tok, "implicit declaration of a function");
+-    error_tok(tok, "undefined variable");
+-  }
+-
+-  if (tok->kind == TK_STR) {
+-    Obj *var = new_string_literal(tok->str, tok->ty);
+-    *rest = tok->next;
+-    return new_var_node(var, tok);
+-  }
+-
+-  if (tok->kind == TK_NUM) {
+-    Node *node;
+-    if (is_flonum(tok->ty)) {
+-      node = new_node(ND_NUM, tok);
+-      node->fval = tok->fval;
+-    } else {
+-      node = new_num(tok->val, tok);
+-    }
+-
+-    node->ty = tok->ty;
+-    *rest = tok->next;
+-    return node;
+-  }
+-
+-  error_tok(tok, "expected an expression");
+-}
+-
+ static Token *parse_typedef(Token *tok, Type *basety) {
+   bool first = true;
+ 

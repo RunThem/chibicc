@@ -1,0 +1,967 @@
+From b9ba0dbf3f8868b2136ad67ea0f3b9633de34d3e Mon Sep 17 00:00:00 2001
+From: RunThem <iccy.fun@outlook.com>
+Date: Sun, 21 Jun 2026 13:51:37 +0800
+Subject: [PATCH 5/6] =?UTF-8?q?feat(libchicc):=20=E5=BC=95=E5=85=A5=20CST?=
+ =?UTF-8?q?=EF=BC=88=E5=85=B7=E4=BD=93=E8=AF=AD=E6=B3=95=E6=A0=91=EF=BC=89?=
+ =?UTF-8?q?=E4=BF=9D=E7=95=99=E6=BA=90=E7=A0=81=E7=BA=A7=E8=AF=AD=E6=B3=95?=
+ =?UTF-8?q?=E4=BF=A1=E6=81=AF?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+解析器不再在解析阶段消解语法糖，改为产出 CST，再通过 lower.c
+降级为现有 AST 供给 type-check 与 codegen：
+
+- 新增 18 个 CST NodeKind（ND_GT/ND_GE/ND_UPLUS/ND_SUBSCRIPT/
+  ND_ARROW/ND_PRE_INC/ND_PRE_DEC/ND_POST_INC/ND_POST_DEC/
+  ND_COMPOUND_ASSIGN/ND_COND_OMIT/ND_WHILE/ND_BREAK/
+  ND_CONTINUE/ND_PAREN/ND_EMPTY_STMT/ND_SIZEOF/ND_ALIGNOF/
+  ND_ENUM_REF），保留原始操作符方向、语法糖和控制流形式
+- Node 结构体新增 comp_op/is_type_operand/sizeof_ty/enum_val 字段
+- Type 结构体新增 is_const/is_volatile/is_restrict 限定符字段
+- 新增 lower.c：CST→AST 降级 pass，深度遍历并转换全部 CST 节点
+- parse.c 全部语法糖消解逻辑移至 lowering pass
+- add_type/eval2/eval_double/is_const_expr 扩展支持 CST 节点类型
+- equal() 增加长度检查防止越界读
+- compile.c 流水线插入 lower_cst_to_ast() 调用
+---
+ Makefile              |   2 +-
+ libchibicc/chibicc.h  |  43 +++++++
+ libchibicc/compile.c  |   6 +-
+ libchibicc/compile.h  |  26 +++++
+ libchibicc/lower.c    | 220 +++++++++++++++++++++++++++++++++++
+ libchibicc/parse.c    | 264 ++++++++++++++++++++++++++----------------
+ libchibicc/tokenize.c |   3 +-
+ 7 files changed, 458 insertions(+), 106 deletions(-)
+ create mode 100644 libchibicc/lower.c
+
+diff --git a/Makefile b/Makefile
+index 31d53cc..1e10142 100644
+--- a/Makefile
++++ b/Makefile
+@@ -4,7 +4,7 @@ CFLAGS=-std=c11 -g -fno-common -Wall -Wno-switch
+ LIB_DIR=libchibicc
+ LIB_SRCS=$(LIB_DIR)/strings.c $(LIB_DIR)/hashmap.c $(LIB_DIR)/unicode.c \
+          $(LIB_DIR)/type.c $(LIB_DIR)/tokenize.c $(LIB_DIR)/preprocess.c \
+-         $(LIB_DIR)/parse.c $(LIB_DIR)/compile.c
++         $(LIB_DIR)/parse.c $(LIB_DIR)/lower.c $(LIB_DIR)/compile.c
+ LIBOBJS=$(LIB_SRCS:.c=.o)
+ 
+ # Executable sources (in root)
+diff --git a/libchibicc/chibicc.h b/libchibicc/chibicc.h
+index f4f84cd..4e292dd 100644
+--- a/libchibicc/chibicc.h
++++ b/libchibicc/chibicc.h
+@@ -207,6 +207,37 @@ typedef enum {
+   ND_ASM,       // "asm"
+   ND_CAS,       // Atomic compare-and-swap
+   ND_EXCH,      // Atomic exchange
++
++  // --- CST-only node kinds (lowered before type-check / codegen) ---
++
++  // Relational operators with preserved direction
++  ND_GT,        // >
++  ND_GE,        // >=
++
++  // Syntactic sugar preserved in CST
++  ND_UPLUS,          // unary +
++  ND_SUBSCRIPT,      // a[b]
++  ND_ARROW,          // a->b
++  ND_PRE_INC,        // ++i
++  ND_PRE_DEC,        // --i
++  ND_POST_INC,       // i++
++  ND_POST_DEC,       // i--
++  ND_COMPOUND_ASSIGN,// += -= *= /= %= &= |= ^= <<= >>=
++  ND_COND_OMIT,      // a ?: b  [GNU]
++
++  // Control flow
++  ND_WHILE,     // while (...)  (currently lowered to ND_FOR)
++  ND_BREAK,     // break        (currently lowered to ND_GOTO)
++  ND_CONTINUE,  // continue     (currently lowered to ND_GOTO)
++
++  // Structure
++  ND_PAREN,     // ( expr )
++  ND_EMPTY_STMT,// ;
++
++  // Type / value provenance
++  ND_SIZEOF,    // sizeof(type) or sizeof expr
++  ND_ALIGNOF,   // _Alignof(type) or _Alignof expr
++  ND_ENUM_REF,  // enum constant reference
+ } NodeKind;
+ 
+ // AST node type
+@@ -273,6 +304,15 @@ struct Node {
+   // Numeric literal
+   int64_t val;
+   long double fval;
++
++  // --- CST-only fields ---
++  // ND_COMPOUND_ASSIGN: underlying binary operator (ND_ADD, ND_SUB, ...)
++  NodeKind comp_op;
++  // ND_SIZEOF / ND_ALIGNOF: whether operand is a type (vs expression)
++  bool is_type_operand;
++  Type *sizeof_ty;  // when is_type_operand, the type operand
++  // ND_ENUM_REF: the resolved enum constant value
++  int64_t enum_val;
+ };
+ 
+ //
+@@ -304,6 +344,9 @@ struct Type {
+   int align;          // alignment
+   bool is_unsigned;   // unsigned or signed
+   bool is_atomic;     // true if _Atomic
++  bool is_const;      // const-qualified
++  bool is_volatile;   // volatile-qualified
++  bool is_restrict;   // restrict-qualified
+   Type *origin;       // for type compatibility check
+ 
+   // Pointer-to or array-of type. We intentionally use the same member
+diff --git a/libchibicc/compile.c b/libchibicc/compile.c
+index 2016239..8cdea3a 100644
+--- a/libchibicc/compile.c
++++ b/libchibicc/compile.c
+@@ -165,8 +165,12 @@ CompilerResult compile(CompilerOption *opt, CompilerContext *ctx) {
+       return result;
+     }
+ 
+-    // 8. Parse
++    // 8. Parse (produces CST)
+     result.asts = parse(ctx, tok);
++
++    // 9. Lower CST → AST for codegen
++    result.asts = lower_cst_to_ast(ctx, result.asts);
++
+     result.code = 0;
+     return result;
+   }
+diff --git a/libchibicc/compile.h b/libchibicc/compile.h
+index 546b437..2c914bb 100644
+--- a/libchibicc/compile.h
++++ b/libchibicc/compile.h
+@@ -41,10 +41,36 @@ Token *preprocess(CompilerContext *ctx, Token *tok);
+ // parse.c
+ //
+ 
++// Node constructors
++Node *new_node(NodeKind kind, Token *tok);
++Node *new_binary(NodeKind kind, Node *lhs, Node *rhs, Token *tok);
++Node *new_unary(NodeKind kind, Node *expr, Token *tok);
++Node *new_num(int64_t val, Token *tok);
++Node *new_long(int64_t val, Token *tok);
++Node *new_var_node(Obj *var, Token *tok);
+ Node *new_cast(CompilerContext *ctx, Node *expr, Type *ty);
++
++// Variable / name helpers
++Obj *new_lvar(CompilerContext *ctx, char *name, Type *ty);
++char *new_unique_name(void);
++
++// Pointer-aware arithmetic constructors
++Node *new_add(CompilerContext *ctx, Node *lhs, Node *rhs, Token *tok);
++Node *new_sub(CompilerContext *ctx, Node *lhs, Node *rhs, Token *tok);
++
++// Operator lowering (used by both parse and lower passes)
++Node *to_assign(CompilerContext *ctx, Node *binary);
++Node *new_inc_dec(CompilerContext *ctx, Node *node, Token *tok, int addend);
++
+ int64_t const_expr(CompilerContext *ctx, Token **rest, Token *tok);
+ Obj *parse(CompilerContext *ctx, Token *tok);
+ 
++//
++// lower.c
++//
++
++Obj *lower_cst_to_ast(CompilerContext *ctx, Obj *cst_globals);
++
+ //
+ // type.c
+ //
+diff --git a/libchibicc/lower.c b/libchibicc/lower.c
+new file mode 100644
+index 0000000..0e8f96e
+--- /dev/null
++++ b/libchibicc/lower.c
+@@ -0,0 +1,220 @@
++#include "compile.h"
++
++// Forward declaration for recursion.
++static Node *lower_node(CompilerContext *ctx, Node *node);
++
++// Deep-clone a node that has no CST-specific semantics.
++// Returns a new node whose kind and fields are copied,
++// with children lowered recursively.
++static Node *lower_clone(CompilerContext *ctx, Node *node) {
++  Node *n = calloc(1, sizeof(Node));
++  *n = *node;
++  if (n->lhs)  n->lhs  = lower_node(ctx, n->lhs);
++  if (n->rhs)  n->rhs  = lower_node(ctx, n->rhs);
++  if (n->cond) n->cond = lower_node(ctx, n->cond);
++  if (n->then) n->then = lower_node(ctx, n->then);
++  if (n->els)  n->els  = lower_node(ctx, n->els);
++  if (n->init) n->init = lower_node(ctx, n->init);
++  if (n->inc)  n->inc  = lower_node(ctx, n->inc);
++  if (n->body) n->body = lower_node(ctx, n->body);
++  if (n->args) n->args = lower_node(ctx, n->args);
++  if (n->cas_addr) n->cas_addr = lower_node(ctx, n->cas_addr);
++  if (n->cas_old)  n->cas_old  = lower_node(ctx, n->cas_old);
++  if (n->cas_new)  n->cas_new  = lower_node(ctx, n->cas_new);
++  if (n->atomic_expr) n->atomic_expr = lower_node(ctx, n->atomic_expr);
++  // Lower linked-list chains
++  if (n->next) n->next = lower_node(ctx, n->next);
++  if (n->case_next) n->case_next = lower_node(ctx, n->case_next);
++  if (n->default_case) n->default_case = lower_node(ctx, n->default_case);
++  if (n->goto_next) n->goto_next = lower_node(ctx, n->goto_next);
++  return n;
++}
++
++static Node *lower_node(CompilerContext *ctx, Node *node) {
++  if (!node)
++    return NULL;
++
++  switch (node->kind) {
++  // --- CST-only: relation operators (direction preserved) ---
++  case ND_GT: {
++    // A > B  →  B < A
++    Node *lhs = lower_node(ctx, node->lhs);
++    Node *rhs = lower_node(ctx, node->rhs);
++    return new_binary(ND_LT, rhs, lhs, node->tok);
++  }
++  case ND_GE: {
++    // A >= B  →  B <= A
++    Node *lhs = lower_node(ctx, node->lhs);
++    Node *rhs = lower_node(ctx, node->rhs);
++    return new_binary(ND_LE, rhs, lhs, node->tok);
++  }
++
++  // --- CST-only: unary plus ---
++  case ND_UPLUS:
++    // +x  →  x
++    return lower_node(ctx, node->lhs);
++
++  // --- CST-only: subscript ---
++  case ND_SUBSCRIPT: {
++    // a[b]  →  *(a + b)
++    Node *lhs = lower_node(ctx, node->lhs);
++    Node *rhs = lower_node(ctx, node->rhs);
++    Node *add = new_add(ctx, lhs, rhs, node->tok);
++    return new_unary(ND_DEREF, add, node->tok);
++  }
++
++  // --- CST-only: arrow ---
++  case ND_ARROW: {
++    // a->b  →  (*a).b
++    Node *lhs = lower_node(ctx, node->lhs);
++    Node *deref = new_unary(ND_DEREF, lhs, node->tok);
++    Node *member = new_unary(ND_MEMBER, deref, node->tok);
++    member->member = node->member;
++    return member;
++  }
++
++  // --- CST-only: prefix ++ / -- ---
++  case ND_PRE_INC: {
++    // ++i  →  to_assign(new_add(i, 1))
++    Node *op = lower_node(ctx, node->lhs);
++    return to_assign(ctx, new_add(ctx, op, new_num(1, node->tok), node->tok));
++  }
++  case ND_PRE_DEC: {
++    // --i  →  to_assign(new_sub(i, 1))
++    Node *op = lower_node(ctx, node->lhs);
++    return to_assign(ctx, new_sub(ctx, op, new_num(1, node->tok), node->tok));
++  }
++
++  // --- CST-only: postfix ++ / -- ---
++  case ND_POST_INC: {
++    // i++  →  (typeof i)((i += 1) - 1)
++    Node *op = lower_node(ctx, node->lhs);
++    add_type(ctx, op);
++    return new_inc_dec(ctx, op, node->tok, 1);
++  }
++  case ND_POST_DEC: {
++    // i--  →  (typeof i)((i -= 1) + 1)
++    Node *op = lower_node(ctx, node->lhs);
++    add_type(ctx, op);
++    return new_inc_dec(ctx, op, node->tok, -1);
++  }
++
++  // --- CST-only: compound assignment ---
++  case ND_COMPOUND_ASSIGN: {
++    // lhs op= rhs  →  to_assign(new_binary(op, lhs, rhs))
++    Node *lhs = lower_node(ctx, node->lhs);
++    Node *rhs = lower_node(ctx, node->rhs);
++    Node *bin = new_binary(node->comp_op, lhs, rhs, node->tok);
++    return to_assign(ctx, bin);
++  }
++
++  // --- CST-only: GNU omitted-middle ternary ---
++  case ND_COND_OMIT: {
++    // a ?: b  →  ({ tmp = a; tmp ? tmp : b; })
++    Node *cond = lower_node(ctx, node->lhs);
++    add_type(ctx, cond);
++    Obj *var = new_lvar(ctx, "", cond->ty);
++    Node *assign = new_binary(ND_ASSIGN, new_var_node(var, node->tok), cond, node->tok);
++    Node *ternary = new_node(ND_COND, node->tok);
++    ternary->cond = new_var_node(var, node->tok);
++    ternary->then = new_var_node(var, node->tok);
++    ternary->els  = lower_node(ctx, node->rhs);
++    return new_binary(ND_COMMA, assign, ternary, node->tok);
++  }
++
++  // --- CST-only: while ---
++  case ND_WHILE: {
++    // while(cond) body  →  for(; cond; ) body
++    Node *n = new_node(ND_FOR, node->tok);
++    n->init = NULL;
++    n->cond = lower_node(ctx, node->cond);
++    n->inc  = NULL;
++    n->then = lower_node(ctx, node->then);
++    n->brk_label = node->brk_label;
++    n->cont_label = node->cont_label;
++    return n;
++  }
++
++  // --- CST-only: break ---
++  case ND_BREAK: {
++    // break →  goto unique_label
++    Node *n = new_node(ND_GOTO, node->tok);
++    n->unique_label = node->label; // stored in label field by parser
++    return n;
++  }
++
++  // --- CST-only: continue ---
++  case ND_CONTINUE: {
++    // continue →  goto unique_label
++    Node *n = new_node(ND_GOTO, node->tok);
++    n->unique_label = node->label;
++    return n;
++  }
++
++  // --- CST-only: parentheses ---
++  case ND_PAREN:
++    // (expr)  →  expr
++    return lower_node(ctx, node->lhs);
++
++  // --- CST-only: empty statement ---
++  case ND_EMPTY_STMT:
++    // ;  →  {} (empty block)
++    return new_node(ND_BLOCK, node->tok);
++
++  // --- CST-only: sizeof ---
++  case ND_SIZEOF: {
++    // sizeof(type/expr)  →  ND_NUM(size) or VLA runtime expression
++    Type *ty;
++    if (node->is_type_operand) {
++      ty = node->sizeof_ty;
++    } else {
++      Node *expr = lower_node(ctx, node->lhs);
++      add_type(ctx, expr);
++      ty = expr->ty;
++    }
++
++    // VLA sizeof: the parser already stored the runtime expression in lhs.
++    if (ty->kind == TY_VLA) {
++      if (node->lhs)
++        return lower_node(ctx, node->lhs);
++      // Fallback: VLA type without pre-computed size (shouldn't happen).
++      return new_num(0, node->tok);
++    }
++    return new_num(ty->size, node->tok);
++  }
++
++  // --- CST-only: _Alignof ---
++  case ND_ALIGNOF: {
++    Type *ty;
++    if (node->is_type_operand) {
++      ty = node->sizeof_ty;
++    } else {
++      Node *expr = lower_node(ctx, node->lhs);
++      add_type(ctx, expr);
++      ty = expr->ty;
++    }
++    return new_num(ty->align, node->tok);
++  }
++
++  // --- CST-only: enum constant reference ---
++  case ND_ENUM_REF:
++    // RED  →  ND_NUM(val)
++    return new_num(node->enum_val, node->tok);
++
++  // --- All other nodes: deep-clone with lowered children ---
++  default:
++    return lower_clone(ctx, node);
++  }
++}
++
++// Lower a whole translation unit: walk the global object list and
++// lower each function body. Returns the lowered AST (same Obj list
++// structure, but all CST kinds replaced).
++Obj *lower_cst_to_ast(CompilerContext *ctx, Obj *cst_globals) {
++  for (Obj *var = cst_globals; var; var = var->next) {
++    if (var->is_function && var->body) {
++      var->body = lower_node(ctx, var->body);
++    }
++  }
++  return cst_globals;
++}
+diff --git a/libchibicc/parse.c b/libchibicc/parse.c
+index 123ab84..e77d042 100644
+--- a/libchibicc/parse.c
++++ b/libchibicc/parse.c
+@@ -45,6 +45,9 @@ typedef struct {
+   bool is_extern;
+   bool is_inline;
+   bool is_tls;
++  bool is_const;
++  bool is_volatile;
++  bool is_restrict;
+   int align;
+ } VarAttr;
+ 
+@@ -147,8 +150,8 @@ typedef struct {
+ // Small operator tables used by the Pratt parser.
+ //
+ // `bp` controls precedence. `action` tells the parser how to build the AST.
+-// `swap` is only used for relational operators like `>` and `>=`, which are
+-// parsed as the corresponding `<`/`<=` nodes with operands reversed.
++// `swap` is no longer used — with CST node kinds ND_GT/ND_GE the operand
++// direction is preserved directly.
+ static OpInfo binops[] = {
+   {"||", BP_LOGOR, ND_LOGOR, OP_BINARY, false},
+   {"&&", BP_LOGAND, ND_LOGAND, OP_BINARY, false},
+@@ -159,8 +162,8 @@ static OpInfo binops[] = {
+   {"!=", BP_EQ, ND_NE, OP_BINARY, false},
+   {"<",  BP_REL, ND_LT, OP_BINARY, false},
+   {"<=", BP_REL, ND_LE, OP_BINARY, false},
+-  {">",  BP_REL, ND_LT, OP_BINARY, true},
+-  {">=", BP_REL, ND_LE, OP_BINARY, true},
++  {">",  BP_REL, ND_GT, OP_BINARY, false},
++  {">=", BP_REL, ND_GE, OP_BINARY, false},
+   {"<<", BP_SHIFT, ND_SHL, OP_BINARY, false},
+   {">>", BP_SHIFT, ND_SHR, OP_BINARY, false},
+   {"+",  BP_ADD, ND_ADD, OP_BINARY, false},
+@@ -228,9 +231,9 @@ static bool is_const_expr(CompilerContext *ctx, Node *node);
+ static Node *assign(CompilerContext *ctx, Token **rest, Token *tok);
+ static double eval_double(CompilerContext *ctx, Node *node);
+ static Node *conditional(CompilerContext *ctx, Token **rest, Token *tok);
+-static Node *new_add(CompilerContext *ctx, Node *lhs, Node *rhs, Token *tok);
+-static Node *new_sub(CompilerContext *ctx, Node *lhs, Node *rhs, Token *tok);
+-static Node *to_assign(CompilerContext *ctx, Node *binary);
++Node *new_add(CompilerContext *ctx, Node *lhs, Node *rhs, Token *tok);
++Node *new_sub(CompilerContext *ctx, Node *lhs, Node *rhs, Token *tok);
++Node *to_assign(CompilerContext *ctx, Node *binary);
+ static Member *get_struct_member(CompilerContext *ctx, Type *ty, Token *tok);
+ static Type *struct_decl(CompilerContext *ctx, Token **rest, Token *tok);
+ static Type *union_decl(CompilerContext *ctx, Token **rest, Token *tok);
+@@ -239,7 +242,7 @@ static Token *parse_typedef(CompilerContext *ctx, Token *tok, Type *basety);
+ static bool is_function(CompilerContext *ctx, Token *tok);
+ static Token *function(CompilerContext *ctx, Token *tok, Type *basety, VarAttr *attr);
+ static Token *global_variable(CompilerContext *ctx, Token *tok, Type *basety, VarAttr *attr);
+-static Node *new_inc_dec(CompilerContext *ctx, Node *node, Token *tok, int addend);
++Node *new_inc_dec(CompilerContext *ctx, Node *node, Token *tok, int addend);
+ static Node *struct_ref(CompilerContext *ctx, Node *node, Token *tok);
+ static Node *generic_selection(CompilerContext *ctx, Token **rest, Token *tok);
+ static Node *parse_expr_bp(CompilerContext *ctx, Token **rest, Token *tok, int min_bp);
+@@ -305,47 +308,40 @@ static Type *find_tag(CompilerContext *ctx, Token *tok) {
+   return NULL;
+ }
+ 
+-static Node *new_node(NodeKind kind, Token *tok) {
++Node *new_node(NodeKind kind, Token *tok) {
+   Node *node = calloc(1, sizeof(Node));
+   node->kind = kind;
+   node->tok = tok;
+   return node;
+ }
+ 
+-static Node *new_binary(NodeKind kind, Node *lhs, Node *rhs, Token *tok) {
++Node *new_binary(NodeKind kind, Node *lhs, Node *rhs, Token *tok) {
+   Node *node = new_node(kind, tok);
+   node->lhs = lhs;
+   node->rhs = rhs;
+   return node;
+ }
+ 
+-static Node *new_unary(NodeKind kind, Node *expr, Token *tok) {
++Node *new_unary(NodeKind kind, Node *expr, Token *tok) {
+   Node *node = new_node(kind, tok);
+   node->lhs = expr;
+   return node;
+ }
+ 
+-static Node *new_num(int64_t val, Token *tok) {
++Node *new_num(int64_t val, Token *tok) {
+   Node *node = new_node(ND_NUM, tok);
+   node->val = val;
+   return node;
+ }
+ 
+-static Node *new_long(int64_t val, Token *tok) {
++Node *new_long(int64_t val, Token *tok) {
+   Node *node = new_node(ND_NUM, tok);
+   node->val = val;
+   node->ty = ty_long;
+   return node;
+ }
+ 
+-static Node *new_ulong(long val, Token *tok) {
+-  Node *node = new_node(ND_NUM, tok);
+-  node->val = val;
+-  node->ty = ty_ulong;
+-  return node;
+-}
+-
+-static Node *new_var_node(Obj *var, Token *tok) {
++Node *new_var_node(Obj *var, Token *tok) {
+   Node *node = new_node(ND_VAR, tok);
+   node->var = var;
+   return node;
+@@ -423,7 +419,7 @@ static Obj *new_var(CompilerContext *ctx, char *name, Type *ty) {
+   return var;
+ }
+ 
+-static Obj *new_lvar(CompilerContext *ctx, char *name, Type *ty) {
++Obj *new_lvar(CompilerContext *ctx, char *name, Type *ty) {
+   Obj *var = new_var(ctx, name, ty);
+   var->is_local = true;
+   var->next = ctx->parser.locals;
+@@ -440,7 +436,7 @@ static Obj *new_gvar(CompilerContext *ctx, char *name, Type *ty) {
+   return var;
+ }
+ 
+-static char *new_unique_name(void) {
++char *new_unique_name(void) {
+   static int id = 0;
+   return format(".L..%d", id++);
+ }
+@@ -543,11 +539,27 @@ static Type *declspec(CompilerContext *ctx, Token **rest, Token *tok, VarAttr *a
+       continue;
+     }
+ 
+-    // These keywords are recognized but ignored.
+-    if (consume(&tok, tok, "const") || consume(&tok, tok, "volatile") ||
+-        consume(&tok, tok, "auto") || consume(&tok, tok, "register") ||
+-        consume(&tok, tok, "restrict") || consume(&tok, tok, "__restrict") ||
+-        consume(&tok, tok, "__restrict__") || consume(&tok, tok, "_Noreturn"))
++    // const / volatile / restrict — stored in VarAttr for type qualifier tracking.
++    if (consume(&tok, tok, "const")) {
++      if (attr) attr->is_const = true;
++      continue;
++    }
++    if (consume(&tok, tok, "volatile")) {
++      if (attr) attr->is_volatile = true;
++      continue;
++    }
++    if (consume(&tok, tok, "restrict") || consume(&tok, tok, "__restrict") ||
++        consume(&tok, tok, "__restrict__")) {
++      if (attr) attr->is_restrict = true;
++      continue;
++    }
++
++    // auto and register are recognized but ignored.
++    if (consume(&tok, tok, "auto") || consume(&tok, tok, "register"))
++      continue;
++
++    // _Noreturn is recognized but ignored for now.
++    if (consume(&tok, tok, "_Noreturn"))
+       continue;
+ 
+     if (equal(tok, "_Atomic")) {
+@@ -691,6 +703,14 @@ static Type *declspec(CompilerContext *ctx, Token **rest, Token *tok, VarAttr *a
+     ty->is_atomic = true;
+   }
+ 
++  // Copy type qualifiers from VarAttr to Type.
++  if (attr) {
++    ty = copy_type(ty);
++    ty->is_const    = attr->is_const;
++    ty->is_volatile = attr->is_volatile;
++    ty->is_restrict = attr->is_restrict;
++  }
++
+   *rest = tok;
+   return ty;
+ }
+@@ -786,8 +806,15 @@ static Type *pointers(CompilerContext *ctx, Token **rest, Token *tok, Type *ty)
+   while (consume(&tok, tok, "*")) {
+     ty = pointer_to(ty);
+     while (equal(tok, "const") || equal(tok, "volatile") || equal(tok, "restrict") ||
+-           equal(tok, "__restrict") || equal(tok, "__restrict__"))
++           equal(tok, "__restrict") || equal(tok, "__restrict__")) {
++      if (equal(tok, "const"))
++        ty->is_const = true;
++      else if (equal(tok, "volatile"))
++        ty->is_volatile = true;
++      else
++        ty->is_restrict = true;
+       tok = tok->next;
++    }
+   }
+   *rest = tok;
+   return ty;
+@@ -1783,7 +1810,7 @@ static Node *stmt(CompilerContext *ctx, Token **rest, Token *tok) {
+   }
+ 
+   if (equal(tok, "while")) {
+-    Node *node = new_node(ND_FOR, tok);
++    Node *node = new_node(ND_WHILE, tok);
+     tok = skip(ctx, tok->next, "(");
+     node->cond = expr(ctx, &tok, tok);
+     tok = skip(ctx, tok, ")");
+@@ -1844,8 +1871,8 @@ static Node *stmt(CompilerContext *ctx, Token **rest, Token *tok) {
+   if (equal(tok, "break")) {
+     if (!ctx->parser.brk_label)
+       error_tok(ctx, tok, "stray break");
+-    Node *node = new_node(ND_GOTO, tok);
+-    node->unique_label = ctx->parser.brk_label;
++    Node *node = new_node(ND_BREAK, tok);
++    node->label = ctx->parser.brk_label;
+     *rest = skip(ctx, tok->next, ";");
+     return node;
+   }
+@@ -1853,8 +1880,8 @@ static Node *stmt(CompilerContext *ctx, Token **rest, Token *tok) {
+   if (equal(tok, "continue")) {
+     if (!ctx->parser.cont_label)
+       error_tok(ctx, tok, "stray continue");
+-    Node *node = new_node(ND_GOTO, tok);
+-    node->unique_label = ctx->parser.cont_label;
++    Node *node = new_node(ND_CONTINUE, tok);
++    node->label = ctx->parser.cont_label;
+     *rest = skip(ctx, tok->next, ";");
+     return node;
+   }
+@@ -1930,14 +1957,9 @@ static Node *parse_binary_rhs(CompilerContext *ctx, Node *lhs, Token **rest, Tok
+     return new_binary(ND_ASSIGN, lhs, rhs, start);
+ 
+   if (op->action == OP_TO_ASSIGN) {
+-    Node *node;
+-    if (op->kind == ND_ADD)
+-      node = new_add(ctx, lhs, rhs, start);
+-    else if (op->kind == ND_SUB)
+-      node = new_sub(ctx, lhs, rhs, start);
+-    else
+-      node = new_binary(op->kind, lhs, rhs, start);
+-    return to_assign(ctx, node);
++    Node *node = new_binary(ND_COMPOUND_ASSIGN, lhs, rhs, start);
++    node->comp_op = op->kind;
++    return node;
+   }
+ 
+   if (op->kind == ND_ADD)
+@@ -1946,9 +1968,6 @@ static Node *parse_binary_rhs(CompilerContext *ctx, Node *lhs, Token **rest, Tok
+   if (op->kind == ND_SUB)
+     return new_sub(ctx, lhs, rhs, start);
+ 
+-  if (op->swap)
+-    return new_binary(op->kind, rhs, lhs, start);
+-
+   return new_binary(op->kind, lhs, rhs, start);
+ }
+ 
+@@ -1956,7 +1975,7 @@ static Node *parse_binary_rhs(CompilerContext *ctx, Node *lhs, Token **rest, Tok
+ static Node *expr_stmt(CompilerContext *ctx, Token **rest, Token *tok) {
+   if (equal(tok, ";")) {
+     *rest = tok->next;
+-    return new_node(ND_BLOCK, tok);
++    return new_node(ND_EMPTY_STMT, tok);
+   }
+ 
+   Node *node = new_node(ND_EXPR_STMT, tok);
+@@ -1984,24 +2003,17 @@ static Node *parse_expr_bp(CompilerContext *ctx, Token **rest, Token *tok, int m
+ 
+   for (;;) {
+     if (equal(tok, "?")) {
+-      Token *start = tok;
+       if (BP_COND < min_bp)
+         break;
+ 
+       if (equal(tok->next, ":")) {
+-        // [GNU] The omitted-middle form is a special case, not a general
+-        // ternary. We preserve the value of the condition in a temp so the
+-        // AST matches the usual `a ? a : b` semantics without duplicating
+-        // side effects.
+-        add_type(ctx, node);
+-        Obj *var = new_lvar(ctx, "", node->ty);
+-        Node *lhs = new_binary(ND_ASSIGN, new_var_node(var, tok), node, tok);
+-        Node *rhs = new_node(ND_COND, tok);
+-        rhs->cond = new_var_node(var, tok);
+-        rhs->then = new_var_node(var, tok);
+-        rhs->els = conditional(ctx, &tok, tok->next->next);
++        // [GNU] The omitted-middle form is preserved as ND_COND_OMIT in CST.
++        // Lowering will expand it to the usual `a ? a : b` with a temp.
++        Node *cond = new_node(ND_COND_OMIT, tok);
++        cond->lhs = node;
++        cond->rhs = conditional(ctx, &tok, tok->next->next);
+         *rest = tok;
+-        return new_binary(ND_COMMA, lhs, rhs, start);
++        return cond;
+       }
+ 
+       Node *cond = new_node(ND_COND, tok);
+@@ -2039,51 +2051,68 @@ static Node *parse_primary(CompilerContext *ctx, Token **rest, Token *tok) {
+   }
+ 
+   if (equal(tok, "(")) {
+-    // Parenthesized subexpression.
+-    Node *node = expr(ctx, &tok, tok->next);
++    // Parenthesized subexpression. Preserved as ND_PAREN in CST.
++    Node *node = new_unary(ND_PAREN, expr(ctx, &tok, tok->next), start);
+     *rest = skip(ctx, tok, ")");
+     return node;
+   }
+ 
+   if (equal(tok, "sizeof") && equal(tok->next, "(") && is_typename(ctx, tok->next->next)) {
+-    // `sizeof(type)` is handled here so it does not evaluate the operand.
++    // `sizeof(type)` — preserved as ND_SIZEOF in CST.
+     Type *ty = typename(ctx, &tok, tok->next->next);
+     *rest = skip(ctx, tok, ")");
+ 
+-    if (ty->kind == TY_VLA) {
+-      if (ty->vla_size)
+-        return new_var_node(ty->vla_size, tok);
++    Node *node = new_node(ND_SIZEOF, start);
++    node->is_type_operand = true;
++    node->sizeof_ty = ty;
+ 
+-      Node *lhs = compute_vla_size(ctx, ty, tok);
+-      Node *rhs = new_var_node(ty->vla_size, tok);
+-      return new_binary(ND_COMMA, lhs, rhs, tok);
++    if (ty->kind == TY_VLA) {
++      if (ty->vla_size) {
++        node->lhs = new_var_node(ty->vla_size, tok);
++      } else {
++        Node *lhs = compute_vla_size(ctx, ty, tok);
++        Node *rhs = new_var_node(ty->vla_size, tok);
++        node->lhs = new_binary(ND_COMMA, lhs, rhs, tok);
++      }
+     }
+-
+-    return new_ulong(ty->size, start);
++    return node;
+   }
+ 
+   if (equal(tok, "sizeof")) {
+-    // `sizeof expr` still parses the operand as an expression, but only to
+-    // determine its type.
+-    Node *node = parse_prefix(ctx, rest, tok->next);
+-    add_type(ctx, node);
+-    if (node->ty->kind == TY_VLA)
+-      return new_var_node(node->ty->vla_size, tok);
+-    return new_ulong(node->ty->size, tok);
++    // `sizeof expr` — preserved as ND_SIZEOF in CST.
++    Node *expr = parse_prefix(ctx, rest, tok->next);
++    add_type(ctx, expr);
++
++    Node *node = new_node(ND_SIZEOF, tok);
++    node->is_type_operand = false;
++    node->lhs = expr;
++
++    if (expr->ty->kind == TY_VLA)
++      node->lhs = new_var_node(expr->ty->vla_size, tok);
++    return node;
+   }
+ 
+   if (equal(tok, "_Alignof") && equal(tok->next, "(") && is_typename(ctx, tok->next->next)) {
+-    // Type form of `_Alignof`.
++    // `_Alignof(type)` — preserved as ND_ALIGNOF in CST.
++    Token *start_align = tok;
+     Type *ty = typename(ctx, &tok, tok->next->next);
+     *rest = skip(ctx, tok, ")");
+-    return new_ulong(ty->align, tok);
++
++    Node *node = new_node(ND_ALIGNOF, start_align);
++    node->is_type_operand = true;
++    node->sizeof_ty = ty;
++    return node;
+   }
+ 
+   if (equal(tok, "_Alignof")) {
+-    // Expression form of `_Alignof`.
+-    Node *node = parse_prefix(ctx, rest, tok->next);
+-    add_type(ctx, node);
+-    return new_ulong(node->ty->align, tok);
++    // `_Alignof expr` — preserved as ND_ALIGNOF in CST.
++    Node *expr = parse_prefix(ctx, rest, tok->next);
++    add_type(ctx, expr);
++
++    Node *node = new_node(ND_ALIGNOF, tok);
++    node->is_type_operand = false;
++    node->lhs = expr;
++    return node;
+   }
+ 
+   if (equal(tok, "_Generic"))
+@@ -2146,8 +2175,12 @@ static Node *parse_primary(CompilerContext *ctx, Token **rest, Token *tok) {
+     if (sc) {
+       if (sc->var)
+         return new_var_node(sc->var, tok);
+-      if (sc->enum_ty)
+-        return new_num(sc->enum_val, tok);
++      if (sc->enum_ty) {
++        // Enum constant reference preserved as ND_ENUM_REF in CST.
++        Node *node = new_node(ND_ENUM_REF, tok);
++        node->enum_val = sc->enum_val;
++        return node;
++      }
+     }
+ 
+     if (equal(tok->next, "("))
+@@ -2193,11 +2226,11 @@ static Node *parse_postfix(CompilerContext *ctx, Token **rest, Token *tok) {
+     }
+ 
+     if (op->action == POST_SUBSCRIPT) {
+-      // `x[y]` is lowered to `*(x+y)`.
++      // `x[y]` is preserved as ND_SUBSCRIPT in CST.
+       Token *start = tok;
+       Node *idx = expr(ctx, &tok, tok->next);
+       tok = skip(ctx, tok, "]");
+-      node = new_unary(ND_DEREF, new_add(ctx, node, idx, start), start);
++      node = new_binary(ND_SUBSCRIPT, node, idx, start);
+       continue;
+     }
+ 
+@@ -2209,22 +2242,28 @@ static Node *parse_postfix(CompilerContext *ctx, Token **rest, Token *tok) {
+     }
+ 
+     if (op->action == POST_ARROW) {
+-      // `x->y` is lowered to `(*x).y`.
+-      node = new_unary(ND_DEREF, node, tok);
+-      node = struct_ref(ctx, node, tok->next);
++      // `x->y` is preserved as ND_ARROW in CST.
++      add_type(ctx, node);
++      if (node->ty->kind != TY_PTR)
++        error_tok(ctx, tok, "not a pointer");
++      Member *mem = get_struct_member(ctx, node->ty->base, tok->next);
++      if (!mem)
++        error_tok(ctx, tok->next, "no such member");
++      node = new_unary(ND_ARROW, node, tok);
++      node->member = mem;
+       tok = tok->next->next;
+       continue;
+     }
+ 
+     if (op->action == POST_INC) {
+-      // Postfix increment/decrement must preserve the original value.
+-      node = new_inc_dec(ctx, node, tok, 1);
++      // Postfix increment is preserved as ND_POST_INC in CST.
++      node = new_unary(ND_POST_INC, node, tok);
+       tok = tok->next;
+       continue;
+     }
+ 
+     if (op->action == POST_DEC) {
+-      node = new_inc_dec(ctx, node, tok, -1);
++      node = new_unary(ND_POST_DEC, node, tok);
+       tok = tok->next;
+       continue;
+     }
+@@ -2239,8 +2278,8 @@ static Node *parse_prefix(CompilerContext *ctx, Token **rest, Token *tok) {
+   if (op) {
+     switch (op->action) {
+     case PFX_NOP:
+-      // Unary `+` is a no-op.
+-      return parse_prefix(ctx, rest, tok->next);
++      // Unary `+` is preserved as ND_UPLUS in CST.
++      return new_unary(ND_UPLUS, parse_prefix(ctx, rest, tok->next), tok);
+     case PFX_NEG:
+       // Unary minus is just a node wrapper around the recursive operand.
+       return new_unary(ND_NEG, parse_prefix(ctx, rest, tok->next), tok);
+@@ -2267,11 +2306,11 @@ static Node *parse_prefix(CompilerContext *ctx, Token **rest, Token *tok) {
+     case PFX_BITNOT:
+       return new_unary(ND_BITNOT, parse_prefix(ctx, rest, tok->next), tok);
+     case PFX_PREINC:
+-      // `++i` is lowered to `i += 1` so later passes only need assignment.
+-      return to_assign(ctx, new_add(ctx, parse_prefix(ctx, rest, tok->next), new_num(1, tok), tok));
++      // `++i` is preserved as ND_PRE_INC in CST.
++      return new_unary(ND_PRE_INC, parse_prefix(ctx, rest, tok->next), tok);
+     case PFX_PREDEC:
+-      // `--i` follows the same lowering as `++i`.
+-      return to_assign(ctx, new_sub(ctx, parse_prefix(ctx, rest, tok->next), new_num(1, tok), tok));
++      // `--i` follows the same pattern as `++i`.
++      return new_unary(ND_PRE_DEC, parse_prefix(ctx, rest, tok->next), tok);
+     case PFX_LABELVAL: {
+       // GNU ctx->parser.labels-as-values are captured directly as a node.
+       Node *node = new_node(ND_LABEL_VAL, tok);
+@@ -2468,6 +2507,15 @@ static bool is_const_expr(CompilerContext *ctx, Node *node) {
+     return is_const_expr(ctx, node->lhs);
+   case ND_NUM:
+     return true;
++  // CST nodes
++  case ND_GT:
++  case ND_GE:
++    return is_const_expr(ctx, node->lhs) && is_const_expr(ctx, node->rhs);
++  case ND_UPLUS:
++  case ND_PAREN:
++    return is_const_expr(ctx, node->lhs);
++  case ND_ENUM_REF:
++    return true;
+   }
+ 
+   return false;
+@@ -2508,6 +2556,16 @@ static double eval_double(CompilerContext *ctx, Node *node) {
+     return eval(ctx, node->lhs);
+   case ND_NUM:
+     return node->fval;
++  case ND_GT:
++    return eval_double(ctx, node->lhs) > eval_double(ctx, node->rhs);
++  case ND_GE:
++    return eval_double(ctx, node->lhs) >= eval_double(ctx, node->rhs);
++  case ND_UPLUS:
++    return eval_double(ctx, node->lhs);
++  case ND_PAREN:
++    return eval_double(ctx, node->lhs);
++  case ND_ENUM_REF:
++    return node->enum_val;
+   }
+ 
+   error_tok(ctx, node->tok, "not a compile-time constant");
+@@ -2519,7 +2577,7 @@ static double eval_double(CompilerContext *ctx, Node *node) {
+ // However, if a given expression is of form `A.x op= C`, the input is
+ // converted to `tmp = &A, (*tmp).x = (*tmp).x op C` to handle assignments
+ // to bitfields.
+-static Node *to_assign(CompilerContext *ctx, Node *binary) {
++Node *to_assign(CompilerContext *ctx, Node *binary) {
+   add_type(ctx, binary->lhs);
+   add_type(ctx, binary->rhs);
+   Token *tok = binary->tok;
+@@ -2633,7 +2691,7 @@ static Node *to_assign(CompilerContext *ctx, Node *binary) {
+ // so that p+n points to the location n elements (not bytes) ahead of p.
+ // In other words, we need to scale an integer value before adding to a
+ // pointer value. This function takes care of the scaling.
+-static Node *new_add(CompilerContext *ctx, Node *lhs, Node *rhs, Token *tok) {
++Node *new_add(CompilerContext *ctx, Node *lhs, Node *rhs, Token *tok) {
+   add_type(ctx, lhs);
+   add_type(ctx, rhs);
+ 
+@@ -2663,7 +2721,7 @@ static Node *new_add(CompilerContext *ctx, Node *lhs, Node *rhs, Token *tok) {
+ }
+ 
+ // Like `+`, `-` is overloaded for the pointer type.
+-static Node *new_sub(CompilerContext *ctx, Node *lhs, Node *rhs, Token *tok) {
++Node *new_sub(CompilerContext *ctx, Node *lhs, Node *rhs, Token *tok) {
+   add_type(ctx, lhs);
+   add_type(ctx, rhs);
+ 
+@@ -2946,7 +3004,7 @@ static Node *struct_ref(CompilerContext *ctx, Node *node, Token *tok) {
+ }
+ 
+ // Convert A++ to `(typeof A)((A += 1) - 1)`
+-static Node *new_inc_dec(CompilerContext *ctx, Node *node, Token *tok, int addend) {
++Node *new_inc_dec(CompilerContext *ctx, Node *node, Token *tok, int addend) {
+   add_type(ctx, node);
+   return new_cast(ctx, new_add(ctx, to_assign(ctx, new_add(ctx, node, new_num(addend, tok), tok)),
+                           new_num(-addend, tok), tok),
+diff --git a/libchibicc/tokenize.c b/libchibicc/tokenize.c
+index 1f98c89..2ff8112 100644
+--- a/libchibicc/tokenize.c
++++ b/libchibicc/tokenize.c
+@@ -80,7 +80,8 @@ void warn_tok(CompilerContext *ctx, Token *tok, char *fmt, ...) {
+ 
+ // Consumes the current token if it matches `op`.
+ bool equal(Token *tok, char *op) {
+-  return memcmp(tok->loc, op, tok->len) == 0 && op[tok->len] == '\0';
++  int oplen = strlen(op);
++  return tok->len == oplen && memcmp(tok->loc, op, oplen) == 0;
+ }
+ 
+ // Ensure that the current token is `op`.
+-- 
+2.39.5 (Apple Git-154)
+

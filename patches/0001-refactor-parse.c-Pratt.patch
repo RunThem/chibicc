@@ -1,3 +1,22 @@
+From 746988379c2cb6e7ff907bc70237555b8a4f6265 Mon Sep 17 00:00:00 2001
+From: RunThem <iccy.fun@outlook.com>
+Date: Sat, 20 Jun 2026 20:39:41 +0800
+Subject: [PATCH 1/6] =?UTF-8?q?refactor(parse.c):=20=E4=BD=BF=E7=94=A8=20P?=
+ =?UTF-8?q?ratt=20=E8=A7=A3=E6=9E=90=E5=99=A8=E6=9B=BF=E6=8D=A2=E9=80=92?=
+ =?UTF-8?q?=E5=BD=92=E4=B8=8B=E9=99=8D=E8=A1=A8=E8=BE=BE=E5=BC=8F=E8=A7=A3?=
+ =?UTF-8?q?=E6=9E=90?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+- 引入绑定权值枚举和运算符表，驱动二元、前缀、后缀解析
+- 删除 14 个递归下降函数，统一由 parse_expr_bp() 处理
+- 简化 expr()/assign()/conditional() 为 Pratt 核心调用
+- 常量求值函数原文下移，行为无变化
+---
+ parse.c | 1589 +++++++++++++++++++++++++++----------------------------
+ 1 file changed, 769 insertions(+), 820 deletions(-)
+
 diff --git a/parse.c b/parse.c
 index 6acaeb8..6668057 100644
 --- a/parse.c
@@ -1693,3 +1712,6 @@ index 6acaeb8..6668057 100644
  static Token *parse_typedef(Token *tok, Type *basety) {
    bool first = true;
  
+-- 
+2.39.5 (Apple Git-154)
+

@@ -1,0 +1,282 @@
+From 22e78d2f18058bc787ab7bd2fbe40d6affdd427a Mon Sep 17 00:00:00 2001
+From: RunThem <iccy.fun@outlook.com>
+Date: Sun, 21 Jun 2026 01:40:09 +0800
+Subject: [PATCH 3/6] =?UTF-8?q?refactor:=20=E5=B0=86=20init=5Fmacros=20?=
+ =?UTF-8?q?=E7=A7=BB=E8=87=B3=20compile.c=EF=BC=8C=E6=8C=89=20target=20?=
+ =?UTF-8?q?=E6=9D=A1=E4=BB=B6=E5=90=AF=E7=94=A8=E5=B9=B3=E5=8F=B0=E5=AE=8F?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+- 新增 Target 枚举 (TARGET_NONE / TARGET_X86_64_LINUX)
+- CompilerOptions 新增 target 字段
+- init_macros() 移至 compile.c，平台无关宏始终定义
+- x86-64/Linux 宏仅在 target == TARGET_X86_64_LINUX 时注入
+- add_builtin() 改为非 static，新增 init_builtins() 注册内置 handler
+- format_date/format_time 随 init_macros 移至 compile.c
+- main.c cc1() 设置 target = TARGET_X86_64_LINUX
+---
+ libchibicc/chibicc.h    |  6 +++
+ libchibicc/compile.c    | 82 ++++++++++++++++++++++++++++++++++++++++-
+ libchibicc/compile.h    |  4 +-
+ libchibicc/preprocess.c | 69 +---------------------------------
+ main.c                  |  3 ++
+ 5 files changed, 95 insertions(+), 69 deletions(-)
+
+diff --git a/libchibicc/chibicc.h b/libchibicc/chibicc.h
+index 9cd4757..50312c6 100644
+--- a/libchibicc/chibicc.h
++++ b/libchibicc/chibicc.h
+@@ -374,6 +374,11 @@ extern Type *ty_ldouble;
+ // compile.c
+ //
+ 
++typedef enum {
++  TARGET_NONE = 0,
++  TARGET_X86_64_LINUX,
++} Target;
++
+ struct CompilerOptions {
+   const char   *source_path;      // Source file path
+   StringArray   include_paths;    // Header search paths (-I)
+@@ -382,6 +387,7 @@ struct CompilerOptions {
+   StringArray   undefines;        // Macros to undefine (-U)
+   bool          tokenize_only;    // Stop after tokenization
+   bool          preprocess_only;  // Stop after preprocessing
++  Target        target;           // Target architecture/OS
+   jmp_buf       error_jmp;        // setjmp/longjmp buffer
+ };
+ 
+diff --git a/libchibicc/compile.c b/libchibicc/compile.c
+index 2203360..d847e0d 100644
+--- a/libchibicc/compile.c
++++ b/libchibicc/compile.c
+@@ -33,13 +33,93 @@ static void apply_user_defines(CompilerOptions *opt) {
+     undef_macro(opt->undefines.data[i]);
+ }
+ 
++// __DATE__ is expanded to the current date, e.g. "May 17 2020".
++static char *format_date(struct tm *tm) {
++  static char mon[][4] = {
++    "Jan", "Feb", "Mar", "Apr", "May", "Jun",
++    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
++  };
++
++  return format("\"%s %2d %d\"", mon[tm->tm_mon], tm->tm_mday, tm->tm_year + 1900);
++}
++
++// __TIME__ is expanded to the current time, e.g. "13:34:03".
++static char *format_time(struct tm *tm) {
++  return format("\"%02d:%02d:%02d\"", tm->tm_hour, tm->tm_min, tm->tm_sec);
++}
++
++static void init_macros(Target target) {
++  // Platform-independent predefined macros
++  define_macro("__C99_MACRO_WITH_VA_ARGS", "1");
++  define_macro("__STDC_HOSTED__", "1");
++  define_macro("__STDC_NO_COMPLEX__", "1");
++  define_macro("__STDC_UTF_16__", "1");
++  define_macro("__STDC_UTF_32__", "1");
++  define_macro("__STDC_VERSION__", "201112L");
++  define_macro("__STDC__", "1");
++
++  // Compiler identity
++  define_macro("__chibicc__", "1");
++
++  // GNU keyword aliases
++  define_macro("__alignof__", "_Alignof");
++  define_macro("__const__", "const");
++  define_macro("__inline__", "inline");
++  define_macro("__signed__", "signed");
++  define_macro("__typeof__", "typeof");
++  define_macro("__volatile__", "volatile");
++
++  // Builtin handler macros
++  init_builtins();
++
++  // Date and time
++  time_t now = time(NULL);
++  struct tm *tm = localtime(&now);
++  define_macro("__DATE__", format_date(tm));
++  define_macro("__TIME__", format_time(tm));
++
++  // Platform-dependent macros
++  switch (target) {
++  case TARGET_X86_64_LINUX:
++    define_macro("__amd64", "1");
++    define_macro("__amd64__", "1");
++    define_macro("__x86_64", "1");
++    define_macro("__x86_64__", "1");
++    define_macro("_LP64", "1");
++    define_macro("__LP64__", "1");
++    define_macro("__ELF__", "1");
++    define_macro("__linux", "1");
++    define_macro("__linux__", "1");
++    define_macro("__gnu_linux__", "1");
++    define_macro("__unix", "1");
++    define_macro("__unix__", "1");
++    define_macro("linux", "1");
++    define_macro("unix", "1");
++    define_macro("__SIZEOF_SHORT__", "2");
++    define_macro("__SIZEOF_INT__", "4");
++    define_macro("__SIZEOF_LONG__", "8");
++    define_macro("__SIZEOF_LONG_LONG__", "8");
++    define_macro("__SIZEOF_POINTER__", "8");
++    define_macro("__SIZEOF_SIZE_T__", "8");
++    define_macro("__SIZEOF_PTRDIFF_T__", "8");
++    define_macro("__SIZEOF_FLOAT__", "4");
++    define_macro("__SIZEOF_DOUBLE__", "8");
++    define_macro("__SIZEOF_LONG_DOUBLE__", "8");
++    define_macro("__SIZE_TYPE__", "unsigned long");
++    define_macro("__USER_LABEL_PREFIX__", "");
++    break;
++  default:
++    break;
++  }
++}
++
+ CompileResult compile(CompilerOptions *opt) {
+   CompileResult result = {0};
+   current_opts = opt;
+ 
+   if (setjmp(opt->error_jmp) == 0) {
+     // 1. Initialize predefined macros
+-    init_macros();
++    init_macros(opt->target);
+ 
+     // 2. Apply user-defined macros (override same-named predefined macros)
+     apply_user_defines(opt);
+diff --git a/libchibicc/compile.h b/libchibicc/compile.h
+index 921f7c4..cd725e0 100644
+--- a/libchibicc/compile.h
++++ b/libchibicc/compile.h
+@@ -29,8 +29,10 @@ Token *tokenize_file(char *filename);
+ // preprocess.c
+ //
+ 
++typedef Token *macro_handler_fn(Token *);
++
+ char *search_include_paths(char *filename, StringArray *include_paths);
+-void init_macros(void);
++void init_builtins(void);
+ void define_macro(char *name, char *buf);
+ void undef_macro(char *name);
+ Token *preprocess(Token *tok, CompilerOptions *opt);
+diff --git a/libchibicc/preprocess.c b/libchibicc/preprocess.c
+index 60f37fd..75097c5 100644
+--- a/libchibicc/preprocess.c
++++ b/libchibicc/preprocess.c
+@@ -38,8 +38,6 @@ struct MacroArg {
+   Token *tok;
+ };
+ 
+-typedef Token *macro_handler_fn(Token *);
+-
+ typedef struct Macro Macro;
+ struct Macro {
+   char *name;
+@@ -1008,10 +1006,9 @@ void undef_macro(char *name) {
+   hashmap_delete(&macros, name);
+ }
+ 
+-static Macro *add_builtin(char *name, macro_handler_fn *fn) {
++void add_builtin(char *name, macro_handler_fn *fn) {
+   Macro *m = add_macro(name, true, NULL);
+   m->handler = fn;
+-  return m;
+ }
+ 
+ static Token *file_macro(Token *tmpl) {
+@@ -1051,74 +1048,12 @@ static Token *base_file_macro(Token *tmpl) {
+   return new_str_token((char *)pp_opts->source_path, tmpl);
+ }
+ 
+-// __DATE__ is expanded to the current date, e.g. "May 17 2020".
+-static char *format_date(struct tm *tm) {
+-  static char mon[][4] = {
+-    "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+-    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+-  };
+-
+-  return format("\"%s %2d %d\"", mon[tm->tm_mon], tm->tm_mday, tm->tm_year + 1900);
+-}
+-
+-// __TIME__ is expanded to the current time, e.g. "13:34:03".
+-static char *format_time(struct tm *tm) {
+-  return format("\"%02d:%02d:%02d\"", tm->tm_hour, tm->tm_min, tm->tm_sec);
+-}
+-
+-void init_macros(void) {
+-  // Define predefined macros
+-  define_macro("_LP64", "1");
+-  define_macro("__C99_MACRO_WITH_VA_ARGS", "1");
+-  define_macro("__ELF__", "1");
+-  define_macro("__LP64__", "1");
+-  define_macro("__SIZEOF_DOUBLE__", "8");
+-  define_macro("__SIZEOF_FLOAT__", "4");
+-  define_macro("__SIZEOF_INT__", "4");
+-  define_macro("__SIZEOF_LONG_DOUBLE__", "8");
+-  define_macro("__SIZEOF_LONG_LONG__", "8");
+-  define_macro("__SIZEOF_LONG__", "8");
+-  define_macro("__SIZEOF_POINTER__", "8");
+-  define_macro("__SIZEOF_PTRDIFF_T__", "8");
+-  define_macro("__SIZEOF_SHORT__", "2");
+-  define_macro("__SIZEOF_SIZE_T__", "8");
+-  define_macro("__SIZE_TYPE__", "unsigned long");
+-  define_macro("__STDC_HOSTED__", "1");
+-  define_macro("__STDC_NO_COMPLEX__", "1");
+-  define_macro("__STDC_UTF_16__", "1");
+-  define_macro("__STDC_UTF_32__", "1");
+-  define_macro("__STDC_VERSION__", "201112L");
+-  define_macro("__STDC__", "1");
+-  define_macro("__USER_LABEL_PREFIX__", "");
+-  define_macro("__alignof__", "_Alignof");
+-  define_macro("__amd64", "1");
+-  define_macro("__amd64__", "1");
+-  define_macro("__chibicc__", "1");
+-  define_macro("__const__", "const");
+-  define_macro("__gnu_linux__", "1");
+-  define_macro("__inline__", "inline");
+-  define_macro("__linux", "1");
+-  define_macro("__linux__", "1");
+-  define_macro("__signed__", "signed");
+-  define_macro("__typeof__", "typeof");
+-  define_macro("__unix", "1");
+-  define_macro("__unix__", "1");
+-  define_macro("__volatile__", "volatile");
+-  define_macro("__x86_64", "1");
+-  define_macro("__x86_64__", "1");
+-  define_macro("linux", "1");
+-  define_macro("unix", "1");
+-
++void init_builtins(void) {
+   add_builtin("__FILE__", file_macro);
+   add_builtin("__LINE__", line_macro);
+   add_builtin("__COUNTER__", counter_macro);
+   add_builtin("__TIMESTAMP__", timestamp_macro);
+   add_builtin("__BASE_FILE__", base_file_macro);
+-
+-  time_t now = time(NULL);
+-  struct tm *tm = localtime(&now);
+-  define_macro("__DATE__", format_date(tm));
+-  define_macro("__TIME__", format_time(tm));
+ }
+ 
+ typedef enum {
+diff --git a/main.c b/main.c
+index 2a6ec04..5f1f41f 100644
+--- a/main.c
++++ b/main.c
+@@ -494,6 +494,9 @@ static void cc1(void) {
+   if (opt_E)
+     compile_opts.preprocess_only = true;
+ 
++  // Set the target platform
++  compile_opts.target = TARGET_X86_64_LINUX;
++
+   // Compile using the library API
+   CompileResult result = compile(&compile_opts);
+   if (result.code != 0)
+-- 
+2.39.5 (Apple Git-154)
+

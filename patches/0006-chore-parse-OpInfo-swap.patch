@@ -1,0 +1,103 @@
+From 6931e8d731f206cc66d00eb169b389cff50b3d39 Mon Sep 17 00:00:00 2001
+From: RunThem <iccy.fun@outlook.com>
+Date: Sun, 21 Jun 2026 13:55:06 +0800
+Subject: [PATCH 6/6] =?UTF-8?q?chore(parse):=20=E7=A7=BB=E9=99=A4=20OpInfo?=
+ =?UTF-8?q?=20=E4=B8=AD=E5=B7=B2=E5=BA=9F=E5=BC=83=E7=9A=84=20swap=20?=
+ =?UTF-8?q?=E5=AD=97=E6=AE=B5?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+swap 随 CST 引入已无任何代码读取，binops 表中 33 行尾随 false
+一并清除，OpInfo 从 5 字段精简为 4 字段。
+---
+ libchibicc/parse.c | 64 ++++++++++++++++++++++------------------------
+ 1 file changed, 30 insertions(+), 34 deletions(-)
+
+diff --git a/libchibicc/parse.c b/libchibicc/parse.c
+index e77d042..c2187ad 100644
+--- a/libchibicc/parse.c
++++ b/libchibicc/parse.c
+@@ -113,7 +113,6 @@ typedef struct {
+   int bp;
+   NodeKind kind;
+   OpAction action;
+-  bool swap;
+ } OpInfo;
+ 
+ typedef enum {
+@@ -148,41 +147,38 @@ typedef struct {
+ } PostfixInfo;
+ 
+ // Small operator tables used by the Pratt parser.
+-//
+ // `bp` controls precedence. `action` tells the parser how to build the AST.
+-// `swap` is no longer used — with CST node kinds ND_GT/ND_GE the operand
+-// direction is preserved directly.
+ static OpInfo binops[] = {
+-  {"||", BP_LOGOR, ND_LOGOR, OP_BINARY, false},
+-  {"&&", BP_LOGAND, ND_LOGAND, OP_BINARY, false},
+-  {"|",  BP_BITOR, ND_BITOR, OP_BINARY, false},
+-  {"^",  BP_BITXOR, ND_BITXOR, OP_BINARY, false},
+-  {"&",  BP_BITAND, ND_BITAND, OP_BINARY, false},
+-  {"==", BP_EQ, ND_EQ, OP_BINARY, false},
+-  {"!=", BP_EQ, ND_NE, OP_BINARY, false},
+-  {"<",  BP_REL, ND_LT, OP_BINARY, false},
+-  {"<=", BP_REL, ND_LE, OP_BINARY, false},
+-  {">",  BP_REL, ND_GT, OP_BINARY, false},
+-  {">=", BP_REL, ND_GE, OP_BINARY, false},
+-  {"<<", BP_SHIFT, ND_SHL, OP_BINARY, false},
+-  {">>", BP_SHIFT, ND_SHR, OP_BINARY, false},
+-  {"+",  BP_ADD, ND_ADD, OP_BINARY, false},
+-  {"-",  BP_ADD, ND_SUB, OP_BINARY, false},
+-  {"*",  BP_MUL, ND_MUL, OP_BINARY, false},
+-  {"/",  BP_MUL, ND_DIV, OP_BINARY, false},
+-  {"%",  BP_MUL, ND_MOD, OP_BINARY, false},
+-  {",",  BP_COMMA, ND_COMMA, OP_BINARY, false},
+-  {"=",  BP_ASSIGN, ND_ASSIGN, OP_ASSIGN, false},
+-  {"+=", BP_ASSIGN, ND_ADD, OP_TO_ASSIGN, false},
+-  {"-=", BP_ASSIGN, ND_SUB, OP_TO_ASSIGN, false},
+-  {"*=", BP_ASSIGN, ND_MUL, OP_TO_ASSIGN, false},
+-  {"/=", BP_ASSIGN, ND_DIV, OP_TO_ASSIGN, false},
+-  {"%=", BP_ASSIGN, ND_MOD, OP_TO_ASSIGN, false},
+-  {"&=", BP_ASSIGN, ND_BITAND, OP_TO_ASSIGN, false},
+-  {"|=", BP_ASSIGN, ND_BITOR, OP_TO_ASSIGN, false},
+-  {"^=", BP_ASSIGN, ND_BITXOR, OP_TO_ASSIGN, false},
+-  {"<<=", BP_ASSIGN, ND_SHL, OP_TO_ASSIGN, false},
+-  {">>=", BP_ASSIGN, ND_SHR, OP_TO_ASSIGN, false},
++  {"||", BP_LOGOR, ND_LOGOR, OP_BINARY},
++  {"&&", BP_LOGAND, ND_LOGAND, OP_BINARY},
++  {"|",  BP_BITOR, ND_BITOR, OP_BINARY},
++  {"^",  BP_BITXOR, ND_BITXOR, OP_BINARY},
++  {"&",  BP_BITAND, ND_BITAND, OP_BINARY},
++  {"==", BP_EQ, ND_EQ, OP_BINARY},
++  {"!=", BP_EQ, ND_NE, OP_BINARY},
++  {"<",  BP_REL, ND_LT, OP_BINARY},
++  {"<=", BP_REL, ND_LE, OP_BINARY},
++  {">",  BP_REL, ND_GT, OP_BINARY},
++  {">=", BP_REL, ND_GE, OP_BINARY},
++  {"<<", BP_SHIFT, ND_SHL, OP_BINARY},
++  {">>", BP_SHIFT, ND_SHR, OP_BINARY},
++  {"+",  BP_ADD, ND_ADD, OP_BINARY},
++  {"-",  BP_ADD, ND_SUB, OP_BINARY},
++  {"*",  BP_MUL, ND_MUL, OP_BINARY},
++  {"/",  BP_MUL, ND_DIV, OP_BINARY},
++  {"%",  BP_MUL, ND_MOD, OP_BINARY},
++  {",",  BP_COMMA, ND_COMMA, OP_BINARY},
++  {"=",  BP_ASSIGN, ND_ASSIGN, OP_ASSIGN},
++  {"+=", BP_ASSIGN, ND_ADD, OP_TO_ASSIGN},
++  {"-=", BP_ASSIGN, ND_SUB, OP_TO_ASSIGN},
++  {"*=", BP_ASSIGN, ND_MUL, OP_TO_ASSIGN},
++  {"/=", BP_ASSIGN, ND_DIV, OP_TO_ASSIGN},
++  {"%=", BP_ASSIGN, ND_MOD, OP_TO_ASSIGN},
++  {"&=", BP_ASSIGN, ND_BITAND, OP_TO_ASSIGN},
++  {"|=", BP_ASSIGN, ND_BITOR, OP_TO_ASSIGN},
++  {"^=", BP_ASSIGN, ND_BITXOR, OP_TO_ASSIGN},
++  {"<<=", BP_ASSIGN, ND_SHL, OP_TO_ASSIGN},
++  {">>=", BP_ASSIGN, ND_SHR, OP_TO_ASSIGN},
+ };
+ 
+ static PrefixInfo prefixops[] = {
+-- 
+2.39.5 (Apple Git-154)
+
